@@ -1,5 +1,6 @@
 import {
   Controller,
+  ForbiddenException,
   Get,
   Query,
   ParseUUIDPipe,
@@ -8,6 +9,7 @@ import { ApiTags, ApiOperation, ApiQuery } from '@nestjs/swagger';
 import { ConfigService } from '@nestjs/config';
 import { ReportsService } from './reports.service';
 import { PortfolioPropertyResolver } from './portfolio-property-resolver';
+import { PermissionsService } from '../auth/permissions.service';
 import { RequirePermissions } from '../auth/permissions.decorator';
 import { CurrentUser, type AuthUser } from '../auth/current-user.decorator';
 import { ReportQueryDto } from './dto/report-query.dto';
@@ -24,10 +26,22 @@ export class ReportsController {
     private readonly reportsService: ReportsService,
     private readonly portfolioResolver: PortfolioPropertyResolver,
     private readonly configService: ConfigService,
+    private readonly permissions: PermissionsService,
   ) {}
 
   private authOn(): boolean {
     return this.configService.get<string>('AUTH_ENABLED', 'true') !== 'false';
+  }
+
+  private async reportPropertyIds(user: AuthUser | undefined, organizationId?: string, raw?: string) {
+    const ids = await this.portfolioResolver.resolvePropertyIds(user, this.authOn(), organizationId, this.parsePropertyIds(raw));
+    if (!this.authOn()) return ids;
+    const local = user ? await this.permissions.findLocalUser(user.sub, user.email) : null;
+    if (!local || local.status !== 'active') throw new ForbiddenException('Active local account required');
+    const allowed: string[] = [];
+    for (const id of ids) if ((await this.permissions.getEffectivePermissions(local.id, id)).includes('reports.view')) allowed.push(id);
+    if (!allowed.length) throw new ForbiddenException('No report permissions in portfolio scope');
+    return allowed;
   }
 
   private parsePropertyIds(raw?: string): string[] | undefined {
@@ -140,6 +154,8 @@ export class ReportsController {
     return this.reportsService.getBookingPace(propertyId, startDate, endDate);
   }
 
+  // Portfolio authorization is evaluated per resolved property below; the single-property guard cannot consume an aggregate scope.
+  @RequirePermissions()
   @Get('/portfolio/financial-summary')
   @ApiOperation({ summary: 'Portfolio financial summary across properties' })
   @ApiQuery({ name: 'date', required: true })
@@ -151,15 +167,11 @@ export class ReportsController {
     @Query('propertyIds') propertyIdsRaw: string | undefined,
     @CurrentUser() user?: AuthUser,
   ) {
-    const propertyIds = await this.portfolioResolver.resolvePropertyIds(
-      user,
-      this.authOn(),
-      organizationId,
-      this.parsePropertyIds(propertyIdsRaw),
-    );
+    const propertyIds = await this.reportPropertyIds(user, organizationId, propertyIdsRaw);
     return this.reportsService.getPortfolioFinancialSummary(propertyIds, date);
   }
 
+  @RequirePermissions()
   @Get('/portfolio/occupancy')
   @ApiOperation({ summary: 'Portfolio occupancy across properties' })
   @ApiQuery({ name: 'date', required: true })
@@ -171,12 +183,7 @@ export class ReportsController {
     @Query('propertyIds') propertyIdsRaw: string | undefined,
     @CurrentUser() user?: AuthUser,
   ) {
-    const propertyIds = await this.portfolioResolver.resolvePropertyIds(
-      user,
-      this.authOn(),
-      organizationId,
-      this.parsePropertyIds(propertyIdsRaw),
-    );
+    const propertyIds = await this.reportPropertyIds(user, organizationId, propertyIdsRaw);
     return this.reportsService.getPortfolioOccupancy(propertyIds, date);
   }
 }
