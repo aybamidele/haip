@@ -16,7 +16,7 @@ export class ConsoleEmailProvider implements EmailProvider {
 
   async send(message: EmailMessage): Promise<EmailResult> {
     this.logger.log(
-      `[Email:console] → ${message.to} | ${message.subject}\n${message.text.slice(0, 200)}`,
+      'email_not_sent: console fallback (recipient and body omitted)',
     );
     return {
       ...notSentEmailResult(this.name, 'No email provider configured — message logged only'),

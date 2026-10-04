@@ -20,6 +20,7 @@ interface ContentLine {
 }
 
 export function parseIcsBusyBlocks(ics: string): IcalBusyBlock[] {
+  if (!/^BEGIN:VCALENDAR\s*$/m.test(ics.replaceAll('\r', '')) || !/^END:VCALENDAR\s*$/m.test(ics.replaceAll('\r', ''))) throw new Error('Invalid iCal calendar');
   const lines = unfoldIcalLines(ics);
   const blocks: IcalBusyBlock[] = [];
   let current: ContentLine[] | null = null;
@@ -145,16 +146,19 @@ function eventToBusyBlock(lines: ContentLine[], index: number): IcalBusyBlock | 
     if (!byName.has(line.name)) byName.set(line.name, line);
   }
 
+  if (byName.get('STATUS')?.value.toUpperCase() === 'CANCELLED' || byName.get('TRANSP')?.value.toUpperCase() === 'TRANSPARENT') return null;
+  if (byName.has('RRULE') || byName.has('RDATE') || byName.has('DURATION')) throw new Error('Unsupported recurring or duration event');
   const start = byName.get('DTSTART');
-  if (!start) return null;
+  if (!start) throw new Error('Missing event start');
 
   const end = byName.get('DTEND');
   const uid = byName.get('UID')?.value;
   const summary = unescapeText(byName.get('SUMMARY')?.value ?? '');
   const startDate = parseIcalDate(start);
-  if (!startDate) return null;
+  if (!startDate) throw new Error('Invalid event start');
 
   const endDate = end ? parseIcalDate(end) : null;
+  if (end && (!endDate || endDate.date < startDate.date || (endDate.date === startDate.date && (endDate.isDateOnly || endDate.endsAtMidnight)))) throw new Error('Invalid event end');
   const normalizedEnd = normalizeEndDate(startDate, endDate);
   if (normalizedEnd <= startDate.date) return null;
 
@@ -169,8 +173,10 @@ function eventToBusyBlock(lines: ContentLine[], index: number): IcalBusyBlock | 
 function parseIcalDate(line: ContentLine): { date: string; isDateOnly: boolean; endsAtMidnight: boolean } | null {
   const value = line.value.trim();
   if (/^\d{8}$/.test(value) || line.params['VALUE']?.toUpperCase() === 'DATE') {
+    const canonical = `${value.slice(0, 4)}-${value.slice(4, 6)}-${value.slice(6, 8)}`;
+    if (!/^\d{8}$/.test(value) || new Date(canonical).toISOString().slice(0, 10) !== canonical) throw new Error('Invalid calendar date');
     return {
-      date: `${value.slice(0, 4)}-${value.slice(4, 6)}-${value.slice(6, 8)}`,
+      date: canonical,
       isDateOnly: true,
       endsAtMidnight: true,
     };

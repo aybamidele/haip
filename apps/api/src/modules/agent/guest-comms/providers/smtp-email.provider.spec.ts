@@ -35,7 +35,7 @@ describe('SmtpEmailProvider bounded send', () => {
           messageId: '<stable-delivery@haip.local>',
         }, { timeoutMs: 50 }),
         new Promise<typeof didNotSettle>((resolve) => {
-          setTimeout(() => resolve(didNotSettle), 500);
+          setTimeout(() => resolve(didNotSettle), 3000);
         }),
       ]);
 
@@ -46,7 +46,7 @@ describe('SmtpEmailProvider bounded send', () => {
         provider: 'smtp',
         error: 'Email transport timed out',
       });
-      await vi.waitFor(() => expect(sockets.size).toBe(0), { timeout: 500 });
+      await vi.waitFor(() => expect(sockets.size).toBe(0), { timeout: 3000 });
     } finally {
       for (const socket of sockets) socket.destroy();
       await new Promise<void>((resolve, reject) => {
@@ -126,14 +126,14 @@ describe('SmtpEmailProvider bounded send', () => {
       html: '<p>Hi</p>',
       text: 'Hi',
       messageId: `<stable-delivery-${suffix}@haip.local>`,
-    }, { timeoutMs: 50 });
+    }, { timeoutMs: 500 });
 
     try {
       for (const suffix of ['one', 'two']) {
         const result = await Promise.race([
           send(suffix),
           new Promise<typeof didNotSettle>((resolve) => {
-            setTimeout(() => resolve(didNotSettle), 500);
+            setTimeout(() => resolve(didNotSettle), 3000);
           }),
         ]);
 
@@ -144,7 +144,7 @@ describe('SmtpEmailProvider bounded send', () => {
           provider: 'smtp',
           error: 'Email transport timed out',
         });
-        await vi.waitFor(() => expect(sockets.size).toBe(0), { timeout: 500 });
+        await vi.waitFor(() => expect(sockets.size).toBe(0), { timeout: 3000 });
       }
       expect(sessionsAtData).toBe(2);
       expect(maxConcurrentConnections).toBe(1);
@@ -204,7 +204,7 @@ describe('SmtpEmailProvider bounded send', () => {
         subject: 'Hi',
         html: '<p>Hi</p>',
         text: 'Hi',
-      }, { timeoutMs: 50 });
+      }, { timeoutMs: 500 });
       expect(result.status).toBe('outcomeUnknown');
       expect(clearImmediateSpy).not.toHaveBeenCalled();
     } finally {

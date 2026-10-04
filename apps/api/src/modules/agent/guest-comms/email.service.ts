@@ -43,17 +43,17 @@ export class EmailService {
       }
 
       this.logger.warn(
-        `Email to ${message.to} not delivered via ${lastResult.provider} (attempt ${attempt}/${maxAttempts}): ${lastResult.error}; retrying`,
+        `Email delivery failed via ${lastResult.provider} (attempt ${attempt}/${maxAttempts}); retrying`,
       );
       await this.retryDelay(attempt);
     }
 
     const result = lastResult!;
     if (result.status === 'notSent') {
-      this.logger.warn(`Email to ${message.to} not delivered via ${result.provider}: ${result.error}`);
+      this.logger.warn(`Email delivery failed via ${result.provider}`);
     } else if (result.status === 'outcomeUnknown') {
       this.logger.warn(
-        `Email to ${message.to} outcome unknown via ${result.provider}: ${result.error} — not auto-retrying`,
+        `Email delivery outcome unknown via ${result.provider}; no automatic retry`,
       );
     }
     return result;

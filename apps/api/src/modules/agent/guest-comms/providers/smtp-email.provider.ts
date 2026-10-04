@@ -115,7 +115,7 @@ export class SmtpEmailProvider implements EmailProvider {
     const sendMailPromise = transport.sendMail(mailPayload).then(
       (info) => {
         if (timedOut) return unknownTimeoutResult(this.name);
-        this.logger.log(`Email sent via SMTP to ${message.to}: ${info.messageId}`);
+        this.logger.log('Email accepted by SMTP provider');
         return sentEmailResult(this.name, info.messageId);
       },
       (error: any) => {
@@ -126,7 +126,7 @@ export class SmtpEmailProvider implements EmailProvider {
         ) {
           return unknownTimeoutResult(this.name);
         }
-        this.logger.error(`SMTP send failed to ${message.to}: ${error.message}`);
+        this.logger.error('SMTP email delivery failed');
         return notSentEmailResult(this.name, error.message);
       },
     );
