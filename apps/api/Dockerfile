@@ -1,4 +1,4 @@
-FROM node:20-alpine AS base
+FROM node:24.21.0-alpine AS base
 
 RUN corepack enable && corepack prepare pnpm@9.15.4 --activate
 
@@ -13,7 +13,7 @@ COPY packages/database/package.json ./packages/database/
 COPY packages/shared/package.json* ./packages/shared/
 COPY packages/booking-requests/package.json ./packages/booking-requests/
 
-RUN pnpm install --frozen-lockfile || pnpm install
+RUN pnpm install --frozen-lockfile
 
 # Copy source
 COPY tsconfig.base.json ./
@@ -51,7 +51,7 @@ RUN pnpm --filter @telivityhaip/booking run build
 RUN pnpm --filter @telivityhaip/api run build
 
 # Production stage
-FROM node:20-alpine AS production
+FROM node:24.21.0-alpine AS production
 
 RUN corepack enable && corepack prepare pnpm@9.15.4 --activate
 

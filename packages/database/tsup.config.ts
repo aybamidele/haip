@@ -10,6 +10,7 @@ export default defineConfig({
     'src/push-schema.ts',
     'src/run-migrations.ts',
     'src/seed.ts',
+    'src/seed-staging.ts',
   ],
   format: ['esm', 'cjs'],
   dts: true,
