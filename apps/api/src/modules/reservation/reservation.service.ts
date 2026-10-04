@@ -70,6 +70,8 @@ export class ReservationService {
     dto: CreateReservationDto,
     opts?: {
       confirmationNumber?: string;
+      holdExpiresAt?: Date;
+      allowOverbooking?: boolean;
       acceptedPricingSnapshot?: AcceptedPricingSnapshot;
     },
     tx?: any,
@@ -149,8 +151,8 @@ export class ReservationService {
       // creation for this room type takes the same lock before re-reading
       // date-level availability, preventing two requests from consuming the
       // final room concurrently under READ COMMITTED.
-      await this.lockInventory(dto.propertyId, dto.roomTypeId, transaction);
-
+      const type = await this.lockInventory(dto.propertyId, dto.roomTypeId, transaction);
+      if (!type?.isActive || (dto.adults ?? 1) + (dto.children ?? 0) > type.maxOccupancy) throw new BadRequestException('Selected room cannot accommodate this party');
       // Check inventory availability inside the tx
       const availability = await this.availabilityService.searchAvailability(
         dto.propertyId,
@@ -160,7 +162,7 @@ export class ReservationService {
         transaction,
       );
       assertFullStayAvailability(
-        availability,
+        opts?.allowOverbooking === false ? availability.map((row) => ({ ...row, available: row.available - (row.overbookingBuffer ?? 0) })) : availability,
         dto.roomTypeId,
         dto.arrivalDate,
         dto.departureDate,
@@ -196,6 +198,7 @@ export class ReservationService {
           children: dto.children ?? 0,
           specialRequests: dto.specialRequests,
           status: 'pending',
+          holdExpiresAt: opts?.holdExpiresAt,
         })
         .returning();
 
@@ -232,9 +235,9 @@ export class ReservationService {
     return result;
   }
 
-  async lockInventory(propertyId: string, roomTypeId: string, tx: any): Promise<void> {
+  async lockInventory(propertyId: string, roomTypeId: string, tx: any): Promise<{ id: string; isActive: boolean; maxOccupancy: number }> {
     const lockedRoomTypes = await tx
-      .select({ id: roomTypes.id })
+      .select({ id: roomTypes.id, isActive: roomTypes.isActive, maxOccupancy: roomTypes.maxOccupancy })
       .from(roomTypes)
       .where(and(
         eq(roomTypes.id, roomTypeId),
@@ -244,10 +247,12 @@ export class ReservationService {
     if (!lockedRoomTypes.some((row: { id: string }) => row.id === roomTypeId)) {
       throw new NotFoundException(`room type ${roomTypeId} not found in this property`);
     }
+    return lockedRoomTypes[0];
   }
 
   async confirm(id: string, propertyId: string) {
     const reservation = await this.findByIdRaw(id, propertyId);
+    if (reservation.holdExpiresAt && reservation.holdExpiresAt <= new Date()) throw new BadRequestException('Unpaid hold has expired');
     // UX: short-circuit with a clear error for callers passing stale state.
     assertTransition(reservation.status as ReservationStatus, 'confirmed');
 
@@ -258,9 +263,10 @@ export class ReservationService {
       id,
       propertyId,
       ['pending'],
-      { status: 'confirmed', updatedAt: new Date() },
+      { status: 'confirmed', holdExpiresAt: null, updatedAt: new Date() },
       'confirmed',
     );
+    await this.webhookService.emit('reservation.confirmed', 'reservation', updated.id, { reservationId: updated.id }, propertyId);
     return updated;
   }
 

@@ -68,7 +68,7 @@ function makeService(overrides: Partial<Record<string, any>> = {}) {
   };
 
   const svc = new BookingEngineService(
-    {} as any,
+    { select: vi.fn(() => ({ from: vi.fn(() => ({ where: vi.fn().mockResolvedValue([{ id: RT, propertyId: PROP, isActive: true, maxOccupancy: 4 }]) })) })) } as any,
     search as any,
     bookingSvc as any,
     reservation as any,
@@ -232,7 +232,7 @@ describe('BookingEngineService.quote', () => {
 
   it('reads the complete authoritative quote through a caller transaction', async () => {
     const { svc, config, availability, ratePlan, tax, policy } = makeService();
-    const tx = { marker: 'acceptance-transaction' };
+    const tx = { marker: 'acceptance-transaction', select: vi.fn(() => ({ from: vi.fn(() => ({ where: vi.fn().mockResolvedValue([{ id: RT, maxOccupancy: 4 }]) })) })) };
 
     await svc.quote(PROP, {
       roomTypeId: RT,
@@ -249,6 +249,7 @@ describe('BookingEngineService.quote', () => {
       PROP,
       expect.any(Object),
       tx,
+      false,
     );
     expect(availability.searchAvailability).toHaveBeenCalledWith(
       PROP,
@@ -270,7 +271,7 @@ describe('BookingEngineService.quote', () => {
 
   it('locks mutable config and rate inputs for an acceptance quote', async () => {
     const { svc, config, ratePlan } = makeService();
-    const tx = { marker: 'locked-acceptance-transaction' };
+    const tx = { marker: 'locked-acceptance-transaction', select: vi.fn(() => ({ from: vi.fn(() => ({ where: vi.fn().mockResolvedValue([{ id: RT, maxOccupancy: 4 }]) })) })) };
 
     await svc.quote(PROP, {
       roomTypeId: RT,
@@ -444,5 +445,42 @@ describe('BookingEngineService.quote — rate/room pairing', () => {
       serviceIds: ['service-parking', 'service-parking'],
     } as any)).rejects.toThrow(/services.*duplicates/i);
     expect(ancillary.findServiceById).not.toHaveBeenCalled();
+  });
+});
+
+
+describe('direct booking safety', () => {
+  it('rejects a changed expected price before creating operational records', async () => {
+    const { svc, guest } = makeService();
+    await expect(svc.book(PROP, { ...bookDto, expectedTotal: '1.00' })).rejects.toThrow(/Quote changed/);
+    expect(guest.create).not.toHaveBeenCalled();
+  });
+  it('creates an expiring manual hold without calling the payment gateway or confirming', async () => {
+    const { svc, config, reservation, payment } = makeService();
+    config.getPublicConfig.mockResolvedValue({ ...(await config.getPublicConfig()), allowManualPayments: true });
+    config.getConfig.mockResolvedValue({ autoConfirm: true });
+    await svc.book(PROP, { ...bookDto, paymentMethod: 'manual', paymentToken: undefined });
+    expect(payment.authorizePayment).not.toHaveBeenCalled();
+    expect(reservation.confirm).not.toHaveBeenCalled();
+    expect(reservation.create.mock.calls[0][1]).toEqual(expect.objectContaining({ holdExpiresAt: expect.any(Date), allowOverbooking: false }));
+  });
+  it('cancels provisional inventory after a declined authorization', async () => {
+    const { svc, payment, reservation } = makeService();
+    payment.authorizePayment.mockRejectedValue(new BadRequestException('Declined'));
+    await expect(svc.book(PROP, bookDto)).rejects.toThrow('Declined');
+    expect(reservation.cancel).toHaveBeenCalled();
+    expect(reservation.confirm).not.toHaveBeenCalled();
+  });
+  it('prices each stay date using its canonical PMS rate', async () => {
+    const { svc, ratePlan } = makeService();
+    ratePlan.calculateDerivedRate.mockResolvedValueOnce({ effectiveRate: 100, currency: 'USD' }).mockResolvedValueOnce({ effectiveRate: 150, currency: 'USD' });
+    const quote = await svc.quote(PROP, bookDto);
+    expect(quote.roomTotal).toBe('250.00');
+    expect(quote.lineItems.map((night) => night.rate)).toEqual(['100.00', '150.00']);
+  });
+  it('rejects a party above room capacity before reserving', async () => {
+    const { svc, reservation } = makeService();
+    await expect(svc.book(PROP, { ...bookDto, adults: 8 })).rejects.toThrow(/accommodate/);
+    expect(reservation.create).not.toHaveBeenCalled();
   });
 });

@@ -2,7 +2,7 @@ import { Injectable, BadRequestException, ForbiddenException, Inject } from '@ne
 import { ConfigService } from '@nestjs/config';
 import { eq, and } from 'drizzle-orm';
 import Decimal from 'decimal.js';
-import { bookings, reservations } from '@telivityhaip/database';
+import { bookings, reservations, roomTypes } from '@telivityhaip/database';
 import type { DepositPolicy } from '@telivityhaip/database';
 import { DRIZZLE } from '../../database/database.module';
 import { ConnectSearchService } from '../connect/connect-search.service';
@@ -163,6 +163,11 @@ export class BookingEngineService {
     }
 
     const nights = this.nightsBetween(dto.checkIn, dto.checkOut);
+    await this.ratePlanService.assertSellable(propertyId, dto.ratePlanId, dto.checkIn, dto.checkOut, db);
+    const [roomType] = await (db ?? this.db).select().from(roomTypes).where(and(eq(roomTypes.id, dto.roomTypeId), eq(roomTypes.propertyId, propertyId), eq(roomTypes.isActive, true)));
+    if (!roomType || dto.adults + (dto.children ?? 0) > roomType.maxOccupancy) {
+      throw new BadRequestException('Selected room cannot accommodate this party');
+    }
 
     // Re-confirm availability for the requested room type.
     const availability = options?.excludeReservationId
@@ -182,36 +187,13 @@ export class BookingEngineService {
         db,
       );
     assertFullStayAvailability(
-      availability,
+      availability.map((row) => ({ ...row, available: row.available - (row.overbookingBuffer ?? 0) })),
       dto.roomTypeId,
       dto.checkIn,
       dto.checkOut,
     );
 
-    // Authoritative nightly rate via the rate-plan engine (handles derived rates).
-    const rateContext = {
-      nights,
-      checkIn: dto.checkIn,
-      checkOut: dto.checkOut,
-      stayDate: dto.checkIn,
-    };
-    const { effectiveRate, currency } = options?.lockForUpdate
-      ? await this.ratePlanService.calculateDerivedRate(
-          dto.ratePlanId,
-          propertyId,
-          rateContext,
-          db,
-          true,
-        )
-      : await this.ratePlanService.calculateDerivedRate(
-          dto.ratePlanId,
-          propertyId,
-          rateContext,
-          db,
-        );
-
-    // Per-night tax via the real tax engine (not a flat property rate).
-    const nightlyRate = new Decimal(effectiveRate);
+    let currency = ratePlanRow.currencyCode;
     const lineItems: Array<{ date: string; rate: string; tax: string }> = [];
     let roomTotal = new Decimal(0);
     let taxTotal = new Decimal(0);
@@ -221,6 +203,9 @@ export class BookingEngineService {
       const d = new Date(arrival);
       d.setUTCDate(d.getUTCDate() + i);
       const serviceDate = d.toISOString().slice(0, 10);
+      const calculated = await this.ratePlanService.calculateDerivedRate(dto.ratePlanId, propertyId, { nights, checkIn: dto.checkIn, checkOut: dto.checkOut, stayDate: serviceDate }, db, options?.lockForUpdate ?? false);
+      if (calculated.currency !== currency) throw new BadRequestException('Mixed currencies are not supported');
+      const nightlyRate = new Decimal(calculated.effectiveRate);
       const taxes = await this.taxService.calculateTaxes(
         nightlyRate.toFixed(2),
         'room',
@@ -424,8 +409,14 @@ export class BookingEngineService {
       serviceIds: dto.serviceIds,
     });
 
+    if (dto.expectedTotal !== undefined && (!/^\d{1,10}\.\d{2}$/.test(dto.expectedTotal) || !new Decimal(dto.expectedTotal).equals(quote.grandTotal))) throw new BadRequestException('Quote changed; request a fresh quote');
     const depositDue = new Decimal(quote.depositDue);
-    if (depositDue.greaterThan(0) && !dto.paymentToken) {
+    const manual = dto.paymentMethod === 'manual';
+    if (manual && !config.allowManualPayments) throw new ForbiddenException('Manual payments are not enabled');
+    const holdMinutes = Number(this.runtimeConfig.get<string>('BOOKING_MANUAL_HOLD_MINUTES', '60') ?? '60');
+    if (!Number.isInteger(holdMinutes) || holdMinutes < 1 || holdMinutes > 1440) throw new BadRequestException('Invalid hold configuration');
+    const holdExpiresAt = manual ? new Date(Date.now() + holdMinutes * 60_000) : undefined;
+    if (!manual && depositDue.greaterThan(0) && !dto.paymentToken) {
       throw new BadRequestException('A payment is required to confirm this booking');
     }
     const provider = resolvePaymentGatewayProvider(this.runtimeConfig);
@@ -466,7 +457,13 @@ export class BookingEngineService {
         source: 'direct',
         channelCode: 'booking_engine',
       } as any,
-      { confirmationNumber },
+      { confirmationNumber, holdExpiresAt, allowOverbooking: false, acceptedPricingSnapshot: {
+        version: 1, source: 'current', currencyCode: quote.currencyCode, grandTotal: quote.grandTotal,
+        roomTotal: quote.roomTotal, taxTotal: quote.taxTotal,
+        nights: quote.lineItems.map((night) => ({ date: night.date, roomAmount: night.rate, taxAmount: night.tax })),
+        services: quote.services.map((service) => ({ ...service, lineItems: service.lineItems.map((night) => ({ date: night.date, amount: night.amount, taxAmount: night.tax })) })), servicesTotal: quote.servicesTotal, servicesTaxTotal: quote.servicesTaxTotal,
+        customReason: null, adjustment: null,
+      } },
     );
 
     // 4. Folio.
@@ -502,7 +499,8 @@ export class BookingEngineService {
       status: string;
       nextAction?: unknown;
     } | null = null;
-    if (depositDue.greaterThan(0) && dto.paymentToken) {
+    try {
+    if (!manual && depositDue.greaterThan(0) && dto.paymentToken) {
       const policy = config.depositPolicy as DepositPolicy;
       const payment = await this.paymentService.authorizePayment({
         folioId: folio.id,
@@ -545,13 +543,17 @@ export class BookingEngineService {
       };
     }
 
+    } catch (error) {
+      await this.reservationService.cancel(reservation.id, propertyId, { cancellationReason: 'Payment authorization failed' });
+      throw error;
+    }
     // 7. Auto-confirm only if configured and deposit is already held
     // (skip while the guest is still on the Redsys redirect).
     let status = reservation.status;
     if (
       config.isEnabled &&
-      depositInfo &&
-      depositInfo.status === 'held' &&
+      !manual &&
+      (depositDue.isZero() || depositInfo?.status === 'held') &&
       (await this.shouldAutoConfirm(propertyId))
     ) {
       const confirmed = await this.reservationService.confirm(reservation.id, propertyId);
@@ -566,6 +568,7 @@ export class BookingEngineService {
       currencyCode: quote.currencyCode,
       grandTotal: quote.grandTotal,
       deposit: depositInfo,
+      holdExpiresAt: holdExpiresAt?.toISOString() ?? null,
       lineItems: quote.lineItems,
       services: quote.services,
       servicesTotal: quote.servicesTotal,

@@ -5,6 +5,7 @@ import {
   IsEmail,
   IsInt,
   IsOptional,
+  IsIn,
   IsString,
   IsUUID,
   Min,
@@ -17,6 +18,17 @@ import { ApiProperty, ApiPropertyOptional } from '@nestjs/swagger';
  * accepted from the client. `propertyId` is pinned from the booking-key principal.
  */
 export class BeCreateBookingDto {
+  @ApiPropertyOptional()
+  @IsOptional()
+  @IsString()
+  @MaxLength(32)
+  expectedTotal?: string;
+
+  @ApiPropertyOptional({ enum: ['card', 'manual'] })
+  @IsOptional()
+  @IsIn(['card', 'manual'])
+  paymentMethod?: 'card' | 'manual';
+
   @ApiProperty()
   @IsUUID()
   roomTypeId!: string;

@@ -1372,7 +1372,7 @@ export class BookingRequestService {
     if (!config.isEnabled) {
       throw new ForbiddenException('Direct booking is not enabled for this property');
     }
-    if (config.bookingMode !== 'request') {
+    if (config.bookingMode !== 'request' && !config.allowEnquiries) {
       throw new ForbiddenException('Booking requests are not enabled for this property');
     }
   }

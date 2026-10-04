@@ -116,6 +116,16 @@ export class UpdateBookingEngineConfigDto {
   @ApiPropertyOptional()
   @IsOptional()
   @IsBoolean()
+  allowManualPayments?: boolean;
+
+  @ApiPropertyOptional()
+  @IsOptional()
+  @IsBoolean()
+  allowEnquiries?: boolean;
+
+  @ApiPropertyOptional()
+  @IsOptional()
+  @IsBoolean()
   isEnabled?: boolean;
 
   @ApiPropertyOptional()

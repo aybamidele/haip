@@ -80,7 +80,7 @@ describe('canonical creation transaction seams', () => {
           }),
           where: vi.fn(() => chain),
           for: vi.fn(() => Promise.resolve(
-            table === roomTypes ? [{ id: ROOM_TYPE_ID }] : [],
+            table === roomTypes ? [{ id: ROOM_TYPE_ID, isActive: true, maxOccupancy: 4 }] : [],
           )),
           then: (resolve, reject) => Promise.resolve(
             table === folios ? [{ maxNumber: null }] : [{ id: 'exists' }],
@@ -131,7 +131,7 @@ describe('canonical creation transaction seams', () => {
           }),
           where: vi.fn(() => chain),
           for: vi.fn(() => Promise.resolve(
-            table === roomTypes ? [{ id: ROOM_TYPE_ID }] : [],
+            table === roomTypes ? [{ id: ROOM_TYPE_ID, isActive: true, maxOccupancy: 4 }] : [],
           )),
           then: (resolve, reject) => Promise.resolve(
             table === guests

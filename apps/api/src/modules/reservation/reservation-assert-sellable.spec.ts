@@ -25,14 +25,14 @@ const RATE_PLAN = 'rp-001';
 const ROOM_TYPE = 'rt-001';
 
 function mkDb() {
-  const inventoryLock = vi.fn().mockResolvedValue([{ id: ROOM_TYPE }]);
+  const inventoryLock = vi.fn().mockResolvedValue([{ id: ROOM_TYPE, isActive: true, maxOccupancy: 4 }]);
   return {
     select: vi.fn().mockImplementation(() => ({
       from: vi.fn().mockReturnValue({
         where: vi.fn()
           // guest → roomType FK → ratePlan FK
           .mockResolvedValueOnce([{ id: 'g', isDnr: false }])
-          .mockResolvedValueOnce([{ id: ROOM_TYPE }])
+          .mockResolvedValueOnce([{ id: ROOM_TYPE, isActive: true, maxOccupancy: 4 }])
           .mockResolvedValueOnce([{ id: RATE_PLAN }]),
       }),
     })),
@@ -385,7 +385,7 @@ describe('ReservationService.create — assertSellable (BOOK path)', () => {
               where: vi.fn(() => ({
                 for: vi.fn(async () => {
                   await previous;
-                  return [{ id: ROOM_TYPE }];
+                  return [{ id: ROOM_TYPE, isActive: true, maxOccupancy: 4 }];
                 }),
               })),
             })),

@@ -112,6 +112,7 @@ export const bookings = pgTable('bookings', {
  * Each reservation has its own status, room assignment, and folio.
  */
 export const reservations = pgTable('reservations', {
+  holdExpiresAt: timestamp('hold_expires_at', { withTimezone: true }),
   id: uuid('id').primaryKey().defaultRandom(),
   propertyId: uuid('property_id').notNull().references(() => properties.id),
   bookingId: uuid('booking_id').notNull().references(() => bookings.id),

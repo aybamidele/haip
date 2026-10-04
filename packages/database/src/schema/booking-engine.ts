@@ -123,6 +123,8 @@ export const bookingEngineConfig = pgTable('booking_engine_config', {
   // Auto-confirm a paid booking instead of leaving it 'pending'. Conservative
   // default false (operations decision, not a KB rule).
   autoConfirm: boolean('auto_confirm').notNull().default(false),
+  allowManualPayments: boolean('allow_manual_payments').notNull().default(false),
+  allowEnquiries: boolean('allow_enquiries').notNull().default(false),
   // Stripe PUBLISHABLE key (safe to expose to the widget). Secret key stays server-side.
   stripePublishableKey: varchar('stripe_publishable_key', { length: 255 }),
   createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),

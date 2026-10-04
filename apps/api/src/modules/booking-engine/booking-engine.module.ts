@@ -1,3 +1,8 @@
+import { BookingEmailListener } from './booking-email.listener';
+import { EmailModule } from '../agent/guest-comms/email.module';
+import { BookingMaintenanceService } from './booking-maintenance.service';
+import { IcalModule } from '../ical/ical.module';
+import { WebhookModule } from '../webhook/webhook.module';
 import { Module } from '@nestjs/common';
 import { BookingEngineController } from './booking-engine.controller';
 import { BookingEngineAdminController } from './booking-engine-admin.controller';
@@ -21,6 +26,9 @@ import { PolicyModule } from '../policy/policy.module';
 
 @Module({
   imports: [
+    EmailModule,
+    IcalModule,
+    WebhookModule,
     ConnectModule, // ConnectSearchService, ConnectBookingService
     ReservationModule, // ReservationService, AvailabilityService
     RatePlanModule,
@@ -36,6 +44,8 @@ import { PolicyModule } from '../policy/policy.module';
   controllers: [BookingEngineController, BookingEngineAdminController, BookingReturnController],
   providers: [
     BookingEngineService,
+    BookingMaintenanceService,
+    BookingEmailListener,
     BookingEngineConfigService,
     BookingKeyGuard,
     BookingEngineScopeGuard,

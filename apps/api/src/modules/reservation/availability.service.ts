@@ -120,6 +120,7 @@ export class AvailabilityService {
         and(
           eq(rooms.propertyId, propertyId),
           eq(rooms.isActive, true),
+          notInArray(rooms.status, ['out_of_order', 'out_of_service']),
         ),
       )
       .groupBy(rooms.roomTypeId);

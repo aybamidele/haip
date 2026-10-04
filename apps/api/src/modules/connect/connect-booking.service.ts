@@ -221,6 +221,7 @@ export class ConnectBookingService {
 
     return {
       status: reservation.status,
+      holdExpiresAt: reservation.holdExpiresAt?.toISOString() ?? null,
       confirmationNumber,
       reservationId: reservation.id,
       guestName: guest ? `${guest.firstName} ${guest.lastName}` : 'Unknown',

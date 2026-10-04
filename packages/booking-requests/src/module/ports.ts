@@ -102,6 +102,7 @@ export abstract class BookingEngineServicePort {
  * publishes a question type this deployment cannot interpret.
  */
 export interface PublicBookingEngineConfig {
+  allowEnquiries?: boolean;
   propertyId: string;
   isEnabled: boolean;
   displayName: string | null;

@@ -46,6 +46,8 @@ export interface UpdateConfigInput {
   sellableRatePlanIds?: string[];
   depositPolicy?: DepositPolicy;
   autoConfirm?: boolean;
+  allowManualPayments?: boolean;
+  allowEnquiries?: boolean;
   stripePublishableKey?: string | null;
   bookingMode?: BookingMode;
   paymentMethodCollection?: PaymentMethodCollection;
@@ -185,6 +187,8 @@ export class BookingEngineConfigService {
       sellableRoomTypeIds: cfg.sellableRoomTypeIds as string[],
       sellableRatePlanIds: cfg.sellableRatePlanIds as string[],
       bookingMode,
+      allowManualPayments: cfg.allowManualPayments,
+      allowEnquiries: cfg.allowEnquiries,
       paymentMethodCollection: configuredPaymentMethodCollection,
       paymentMethodClientMode,
       formQuestions,
@@ -272,7 +276,7 @@ export class BookingEngineConfigService {
       // formQuestions are otherwise ordinary columns with no behavioral
       // effect until bookingMode actually flips to 'request', so they can be
       // pre-configured at any time.
-      if (bookingMode === 'request' && !isBookingRequestsEnabled()) {
+      if ((bookingMode === 'request' || normalizedPatch['allowEnquiries'] === true) && !isBookingRequestsEnabled()) {
         throw new BadRequestException(
           'Request booking mode requires the HAIP_BOOKING_REQUESTS deployment flag to be enabled',
         );

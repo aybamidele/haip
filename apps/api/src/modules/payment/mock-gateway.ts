@@ -14,6 +14,7 @@ export class MockGateway implements PaymentGateway {
     _currency: string,
     _options?: PaymentGatewayCallOptions,
   ): Promise<PaymentGatewayResult> {
+    if (_token === 'mock-decline') return { success: false, transactionId: '', errorMessage: 'Simulated decline' };
     return { success: true, transactionId: `mock-auth-${randomUUID()}` };
   }
 
