@@ -107,7 +107,7 @@ export default function Dashboard() {
 
   const { data: agentStatuses } = useQuery({
     queryKey: ['agents', propertyId],
-    queryFn: () => api.get(`/v1/agents/${propertyId}`).then((r) => r.data?.data ?? r.data ?? []),
+    queryFn: () => api.get(`/v1/agents/${propertyId}`, { params: { propertyId } }).then((r) => r.data?.data ?? r.data ?? []),
     enabled: !!propertyId && !isPortfolioMode,
   });
 
