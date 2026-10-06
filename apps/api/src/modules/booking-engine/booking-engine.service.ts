@@ -193,7 +193,7 @@ export class BookingEngineService {
       dto.checkOut,
     );
 
-    let currency = ratePlanRow.currencyCode;
+    const currency = ratePlanRow.currencyCode;
     const lineItems: Array<{ date: string; rate: string; tax: string }> = [];
     let roomTotal = new Decimal(0);
     let taxTotal = new Decimal(0);
