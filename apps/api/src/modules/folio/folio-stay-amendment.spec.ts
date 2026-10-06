@@ -116,7 +116,11 @@ function service() {
 }
 
 describe('FolioService accepted-pricing stay amendment reconciliation', () => {
-  beforeEach(() => { vi.useFakeTimers(); vi.setSystemTime(new Date('2026-10-03T12:00:00.000Z')); });
+  beforeEach(() => {
+    vi.useFakeTimers();
+    vi.setSystemTime(new Date('2026-09-24T12:00:00.000Z'));
+  });
+
   afterEach(() => {
     vi.useRealTimers();
   });
@@ -462,7 +466,6 @@ describe('FolioService accepted-pricing stay amendment reconciliation', () => {
   });
 
   it('balances a partially posted per-night group and defers a future once group', async () => {
-    vi.setSystemTime(new Date('2026-09-30T12:00:00.000Z'));
     const serviceRow = {
       id: 'rs-1', propertyId: PROPERTY, reservationId: RESERVATION, serviceId: 'svc-1',
     };
