@@ -25,6 +25,9 @@ class WorkerLogger implements LoggerService {
 class CalendarWorkerModule {}
 
 async function bootstrap(): Promise<void> {
+  if (process.env['NODE_ENV'] === 'production' && !process.env['ICAL_SIGNING_SECRET']) {
+    throw new Error('Configure the same ICAL_SIGNING_SECRET as the PMS for calendar echo verification');
+  }
   const app = await NestFactory.createApplicationContext(CalendarWorkerModule, { logger: new WorkerLogger(), abortOnError: false });
   let closing = false;
   const close = async () => {

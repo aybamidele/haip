@@ -3,6 +3,7 @@ import { eq, and, ne, notInArray, sql, lt, gt } from 'drizzle-orm';
 import { reservations, roomTypes, properties, rooms, icalBlocks, icalFeeds } from '@telivityhaip/database';
 import { stayDates } from '@telivityhaip/shared';
 import { DRIZZLE } from '../../database/database.module';
+import { importedCalendarOccupancy } from '../ical/ical-inventory';
 
 export interface AvailabilityResult {
   roomTypeId: string;
@@ -88,6 +89,7 @@ export class AvailabilityService {
         id: reservations.id,
         propertyId: reservations.propertyId,
         roomTypeId: reservations.roomTypeId,
+        roomId: reservations.roomId,
         arrivalDate: reservations.arrivalDate,
         departureDate: reservations.departureDate,
       })
@@ -114,6 +116,7 @@ export class AvailabilityService {
       .select({
         roomTypeId: rooms.roomTypeId,
         count: sql<number>`count(*)`,
+        roomIds: sql<string[]>`array_agg(${rooms.id})`,
       })
       .from(rooms)
       .where(
@@ -129,13 +132,13 @@ export class AvailabilityService {
       roomCountRows.map((r: any) => [r.roomTypeId, Number(r.count ?? 0)]),
     );
 
-    // Active import feeds reduce availability as one busy unit per feed/date.
-    // Counting distinct feedIds avoids double-counting overlapping events from
-    // the same external calendar.
+    // Explicit physical-unit mapping unites mirrored calendars. Unmapped feeds
+    // retain legacy per-feed inventory until staff supplies a verified mapping.
     const overlappingIcalBlocks = await conn
       .select({
         roomTypeId: icalBlocks.roomTypeId,
         feedId: icalBlocks.feedId,
+        roomId: icalFeeds.roomId,
         startDate: icalBlocks.startDate,
         endDate: icalBlocks.endDate,
       })
@@ -174,16 +177,11 @@ export class AvailabilityService {
             r.arrivalDate <= dateStr &&
             r.departureDate > dateStr,
         ).length;
-        const importedBusy = new Set(
-          overlappingIcalBlocks
-            .filter(
-              (b: any) =>
-                b.roomTypeId === type.id &&
-                b.startDate <= dateStr &&
-                b.endDate > dateStr,
-            )
-            .map((b: any) => b.feedId),
-        ).size;
+        const unitIds = roomCountRows.find((row: { roomTypeId: string }) => row.roomTypeId === type.id)?.roomIds as string[] | undefined;
+        const importedBusy = importedCalendarOccupancy(dateStr,
+          scopedOverlapping.filter((row: { roomTypeId: string }) => row.roomTypeId === type.id),
+          overlappingIcalBlocks.filter((row: { roomTypeId: string }) => row.roomTypeId === type.id),
+          unitIds ? new Set(unitIds) : undefined);
 
         const overbookingBuffer = Math.floor(totalRooms * (overbookingPct / 100));
         const available = totalRooms + overbookingBuffer - sold - importedBusy;

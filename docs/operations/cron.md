@@ -125,7 +125,9 @@ Channex OTA reviews can also arrive via `POST /channels/inbound/channex/reviews`
 
 An optional standalone worker reuses `IcalService`; the HTTP API does not run its scheduler.
 After migrations, start `node apps/api/dist/ical-worker.js` in a separate container using
-`DATABASE_URL` and `ICAL_POLL_INTERVAL_MS` (default 300000, range 60000–3600000).
+`DATABASE_URL`, the PMS's `ICAL_SIGNING_SECRET`, and `ICAL_POLL_INTERVAL_MS`
+(default 300000, range 60000–3600000). Production startup requires the calendar
+secret so automatic imports recognise the API's signed export event identities.
 It scans due active import feeds every 15 seconds, at most 25 per sweep, and retries
 failed feeds on the next configured cadence. Changing a source URL makes the feed
 due immediately while retaining last-good blocks. Export feeds are served by the API and
@@ -136,7 +138,20 @@ All import callers share a PostgreSQL feed-row lock. An overlapping manual sync 
 the reservation engine's room-type inventory lock. Invalid/unsupported/oversized/failed
 responses preserve the previous busy blocks. Requests do not follow redirects, use
 validated public DNS addresses for the connection, and cap time/body/events. This worker
-adds no physical-unit mapping or calendar echo reconciliation.
+uses the feed's physical-unit mapping and verifies unchanged signed export echoes.
+
+Migration 0029 adds optional `roomId` to feeds. Map calendars for the same physical
+unit to the same room, rather than inferring identity from matching dates or UIDs.
+Unmapped imports retain legacy per-feed occupancy; import mappings can be edited.
+Export mappings are immutable and signed into their URLs; old room-type URLs remain
+valid. Unit exports include assigned reservations and mapped busy dates. Unassigned
+reservations/unmapped imports are conservatively included until staff assigns/maps
+them. Room-type exports publish only dates when the sellable type is exhausted.
+
+Exports use privacy-safe, stable HMAC event UIDs. Import verifies those identities
+before merging spans, and recognises legacy reservation UIDs only for actual scoped
+PMS records. Providers that rewrite event UIDs still require fixture verification;
+matching dates alone are never used to delete a possible external booking.
 
 Feed reads expose `lastSyncAt` (latest attempt), `lastSuccessfulSyncAt`,
 `consecutiveSyncFailures`, `lastSyncStatus` and a sanitised `lastSyncError`. Migration

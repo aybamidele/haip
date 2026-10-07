@@ -21,6 +21,11 @@ export class CreateIcalFeedDto {
   @IsUUID()
   roomTypeId!: string;
 
+  @ApiPropertyOptional({ description: 'Physical room/unit shared by calendars. Omit for legacy room-type mapping.' })
+  @IsOptional()
+  @IsUUID()
+  roomId?: string | null;
+
   @ApiProperty({ enum: ICAL_FEED_DIRECTIONS })
   @IsIn(ICAL_FEED_DIRECTIONS)
   direction!: (typeof ICAL_FEED_DIRECTIONS)[number];
@@ -37,6 +42,11 @@ export class CreateIcalFeedDto {
 }
 
 export class UpdateIcalFeedDto {
+  @ApiPropertyOptional({ description: 'Import mapping only; null restores legacy per-feed mapping.' })
+  @IsOptional()
+  @IsUUID()
+  roomId?: string | null;
+
   @ApiPropertyOptional()
   @IsOptional()
   @IsString()

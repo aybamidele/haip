@@ -8,6 +8,8 @@ import postgres from 'postgres';
 import * as schema from '@telivityhaip/database';
 import { afterAll, afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { IcalService } from './ical.service';
+import { AvailabilityService } from '../reservation/availability.service';
+import { parseIcsBusyBlocks } from './ical.util';
 import { IcalPollingService } from './ical-polling.service';
 
 vi.mock('node:fs', async (original) => ({ ...await original<typeof import('node:fs')>(), writeFileSync: vi.fn(), renameSync: vi.fn() }));
@@ -27,6 +29,7 @@ describe.skipIf(!databaseUrl)('iCal reliability on PostgreSQL', () => {
   let propertyId: string;
   let roomTypeId: string;
   let feedId: string;
+  const guestIds: string[] = [];
   beforeEach(async () => {
     propertyId = randomUUID(); roomTypeId = randomUUID();
     await db.insert(schema.properties).values({ id: propertyId, name: 'Synthetic calendar test', code: propertyId.slice(0, 20), countryCode: 'GB', timezone: 'Europe/London', currencyCode: 'GBP', totalRooms: 1 });
@@ -42,6 +45,11 @@ describe.skipIf(!databaseUrl)('iCal reliability on PostgreSQL', () => {
     await db.delete(schema.auditLogs).where(eq(schema.auditLogs.propertyId, propertyId));
     await db.delete(schema.icalBlocks).where(eq(schema.icalBlocks.propertyId, propertyId));
     await db.delete(schema.icalFeeds).where(eq(schema.icalFeeds.propertyId, propertyId));
+    await db.delete(schema.reservations).where(eq(schema.reservations.propertyId, propertyId));
+    await db.delete(schema.bookings).where(eq(schema.bookings.propertyId, propertyId));
+    await db.delete(schema.ratePlans).where(eq(schema.ratePlans.propertyId, propertyId));
+    await db.delete(schema.rooms).where(eq(schema.rooms.propertyId, propertyId));
+    for (const id of guestIds.splice(0)) await db.delete(schema.guests).where(eq(schema.guests.id, id));
     await db.delete(schema.roomTypes).where(eq(schema.roomTypes.propertyId, propertyId));
     await db.delete(schema.properties).where(eq(schema.properties.id, propertyId));
     vi.restoreAllMocks(); vi.mocked(writeFileSync).mockClear();
@@ -175,4 +183,88 @@ describe.skipIf(!databaseUrl)('iCal reliability on PostgreSQL', () => {
     } finally { unlock(); await inventory; await syncing; }
     expect(await blocks()).toHaveLength(1);
   });
+  const makeUnits = async () => {
+    const ids = [randomUUID(), randomUUID()];
+    await db.insert(schema.rooms).values(ids.map((id, i) => ({ id, propertyId, roomTypeId, number: String(i+1) })));
+    return ids;
+  };
+  const exportFor = async (roomId?: string) => {
+    const result = await service.create({ propertyId, roomTypeId, roomId, direction: 'export', name: 'Synthetic export' });
+    return new URL(result.exportUrl!).searchParams.get('token')!;
+  };
+  const available = async () => (await new AvailabilityService(db).searchAvailability(propertyId, '2027-11-01', '2027-11-04', roomTypeId)).map(row => row.available);
+  const makeReservation = async (roomId?: string) => {
+    const guestId = randomUUID(); guestIds.push(guestId);
+    const bookingId = randomUUID(), ratePlanId = randomUUID(), id = randomUUID();
+    await db.insert(schema.guests).values({ id: guestId, firstName: 'Synthetic', lastName: 'Calendar' });
+    await db.insert(schema.bookings).values({ id: bookingId, guestId, propertyId, confirmationNumber: bookingId, source: 'direct' });
+    await db.insert(schema.ratePlans).values({ id: ratePlanId, propertyId, roomTypeId, name: 'Synthetic rate', code: id.slice(0,20), type: 'bar', baseAmount: '100', currencyCode:'GBP' });
+    await db.insert(schema.reservations).values({ id, propertyId, roomTypeId, roomId, ratePlanId, bookingId, guestId,
+      arrivalDate:'2027-11-01', departureDate:'2027-11-04', nights:3, totalAmount:'300', currencyCode:'GBP', status:'confirmed' });
+    return id;
+  };
+  it('counts mirrored unit feeds once, keeps different units separate and retains legacy mappings', async () => {
+    const [unitA, unitB] = await makeUnits();
+    await service.update(feedId, propertyId, { roomId: unitA });
+    const mirror = await service.create({ propertyId, roomTypeId, roomId: unitA, direction: 'import', name: 'Mirror', sourceUrl: 'https://calendar.example.test/mirror.ics' });
+    downloader(service).mockResolvedValue(calendar());
+    await service.syncImportFeed(feedId, propertyId); await service.syncImportFeed(mirror.feed.id, propertyId);
+    expect(await available()).toEqual([1,1,1]);
+    await service.update(mirror.feed.id, propertyId, { roomId: unitB }); expect(await available()).toEqual([0,0,0]);
+    await service.update(mirror.feed.id, propertyId, { roomId: null }); expect(await available()).toEqual([0,0,0]);
+    expect((await blocks())[0]?.externalUid).toBe('stable-uid');
+  });
+  it('rejects unit mappings outside the property/type and prevents export remapping', async () => {
+    const [unitA, unitB] = await makeUnits();
+    await expect(service.create({ propertyId: randomUUID(), roomTypeId, roomId: unitA, direction:'import', name:'Wrong', sourceUrl:'https://calendar.example.test/a' })).rejects.toThrow();
+    await expect(service.update(feedId, propertyId, { roomId: randomUUID() })).rejects.toThrow(/selected property/);
+    const token = await exportFor(unitA); const rows = await service.list({propertyId,direction:'export'});
+    await expect(service.update(rows[0]!.id, propertyId, { roomId: unitB })).rejects.toThrow(/fixed/);
+    expect(await service.exportCalendar(token)).toContain('BEGIN:VCALENDAR');
+  });
+  it('exports only the mapped unit and pooled exhaustion, including external busy blocks', async () => {
+    const [unitA, unitB] = await makeUnits(); await service.update(feedId, propertyId, {roomId:unitA});
+    const fetch = downloader(service).mockResolvedValue(calendar()); await service.syncImportFeed(feedId,propertyId);
+    const pool=await exportFor(); const own=await exportFor(unitA); const other=await exportFor(unitB);
+    expect(parseIcsBusyBlocks(await service.exportCalendar(pool))).toEqual([]);
+    expect(parseIcsBusyBlocks(await service.exportCalendar(other))).toEqual([]);
+    expect(parseIcsBusyBlocks(await service.exportCalendar(own))).toHaveLength(1);
+    const second=await service.create({propertyId,roomTypeId,roomId:unitB,direction:'import',name:'Another unit',sourceUrl:'https://calendar.example.test/b'});
+    fetch.mockResolvedValue(calendar()); await service.syncImportFeed(second.feed.id,propertyId);
+    expect(parseIcsBusyBlocks(await service.exportCalendar(pool))).toHaveLength(1);
+  });
+  it('ignores signed export echoes before UID merging and releases dates when the source cancels', async () => {
+    const [unitA] = await makeUnits(); await service.update(feedId,propertyId,{roomId:unitA});
+    const fetch=downloader(service).mockResolvedValue(calendar()); await service.syncImportFeed(feedId,propertyId);
+    const token=await exportFor(unitA); const published=await service.exportCalendar(token);
+    const mirror=await service.create({propertyId,roomTypeId,roomId:unitA,direction:'import',name:'Echo',sourceUrl:'https://calendar.example.test/echo'});
+    fetch.mockResolvedValue(published); await service.syncImportFeed(mirror.feed.id,propertyId);
+    expect(await service.listBlocks(mirror.feed.id,{propertyId})).toEqual([]);
+    fetch.mockResolvedValue(calendar('STATUS:CANCELLED')); await service.syncImportFeed(feedId,propertyId);
+    expect(await available()).toEqual([2,2,2]); expect(parseIcsBusyBlocks(await service.exportCalendar(token))).toEqual([]);
+    // A changed date cannot inherit the signature of a former export event.
+    fetch.mockResolvedValue(published.replace('20271101','20271102')); await service.syncImportFeed(mirror.feed.id,propertyId);
+    expect(await service.listBlocks(mirror.feed.id,{propertyId})).toHaveLength(1);
+  });
+  it('exports assigned stays only to their unit, keeps unassigned holds conservative and excludes cancelled stays', async () => {
+    const [unitA, unitB] = await makeUnits(); const own = await exportFor(unitA), other = await exportFor(unitB), pool = await exportFor();
+    const id = await makeReservation(unitA);
+    expect(parseIcsBusyBlocks(await service.exportCalendar(own))).toHaveLength(1);
+    expect(parseIcsBusyBlocks(await service.exportCalendar(other))).toEqual([]);
+    expect(parseIcsBusyBlocks(await service.exportCalendar(pool))).toEqual([]);
+    await db.update(schema.reservations).set({ roomId:null }).where(and(eq(schema.reservations.id,id),eq(schema.reservations.propertyId,propertyId)));
+    expect(parseIcsBusyBlocks(await service.exportCalendar(other))).toHaveLength(1);
+    await db.update(schema.reservations).set({status:'cancelled'}).where(and(eq(schema.reservations.id,id),eq(schema.reservations.propertyId,propertyId)));
+    expect(parseIcsBusyBlocks(await service.exportCalendar(other))).toEqual([]);
+  });
+  it('recognises owned legacy reservation UIDs but retains foreign, malformed and altered signed identities', async () => {
+    const [unitA] = await makeUnits(); const id = await makeReservation(unitA);
+    const fetch = downloader(service).mockResolvedValue(calendar().replace('stable-uid',`${id}@haip`));
+    await service.syncImportFeed(feedId,propertyId); expect(await blocks()).toEqual([]);
+    fetch.mockResolvedValue(calendar().replace('stable-uid',`${randomUUID()}@haip`));
+    await service.syncImportFeed(feedId,propertyId); expect(await blocks()).toHaveLength(1);
+    fetch.mockResolvedValue(calendar().replace('stable-uid',`${'a'.repeat(36)}@haip`));
+    await service.syncImportFeed(feedId,propertyId); expect(await blocks()).toHaveLength(1);
+  });
+
 });

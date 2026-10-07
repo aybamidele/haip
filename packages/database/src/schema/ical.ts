@@ -1,6 +1,6 @@
 import { pgTable, uuid, varchar, text, boolean, timestamp, date, pgEnum, index, integer } from 'drizzle-orm/pg-core';
 import { properties } from './property.js';
-import { roomTypes } from './room.js';
+import { roomTypes, rooms } from './room.js';
 
 export const icalFeedDirectionEnum = pgEnum('ical_feed_direction', [
   'import',
@@ -11,6 +11,8 @@ export const icalFeeds = pgTable('ical_feeds', {
   id: uuid('id').primaryKey().defaultRandom(),
   propertyId: uuid('property_id').notNull().references(() => properties.id),
   roomTypeId: uuid('room_type_id').notNull().references(() => roomTypes.id),
+  // Null preserves legacy per-feed inventory; explicit rooms unite mirrored calendars.
+  roomId: uuid('room_id').references(() => rooms.id),
 
   direction: icalFeedDirectionEnum('direction').notNull(),
   name: varchar('name', { length: 120 }).notNull(),
@@ -31,6 +33,7 @@ export const icalFeeds = pgTable('ical_feeds', {
 }, (table) => ({
   propertyRoomDirectionIdx: index('ical_feeds_property_room_direction_idx')
     .on(table.propertyId, table.roomTypeId, table.direction),
+  propertyUnitIdx: index('ical_feeds_property_room_idx').on(table.propertyId, table.roomId),
 }));
 
 export const icalBlocks = pgTable('ical_blocks', {

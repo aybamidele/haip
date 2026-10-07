@@ -161,16 +161,18 @@ describe('IcalService', () => {
     };
     const token = (new IcalService({} as any, cfg as any) as any).signExportToken(baseFeed);
     const tokenHash = createHash('sha256').update(token).digest('hex');
-    const db = selectDb(
-      [{ ...baseFeed, tokenHash }],
-      [{ id: 'res-1', arrivalDate: '2026-09-01', departureDate: '2026-09-04' }],
-    );
+    const stageRows = [ [{ ...baseFeed, tokenHash }], [{ id: 'res-1', arrivalDate: '2026-09-01', departureDate: '2026-09-04' }], [{ id: 'unit-1' }], [] ];
+    const db = { select: vi.fn(() => {
+      const rows = stageRows.shift();
+      const chain = { where: vi.fn(() => Object.assign(Promise.resolve(rows), { orderBy: vi.fn().mockResolvedValue(rows) })) };
+      return { from: vi.fn(() => ({ ...chain, innerJoin: vi.fn(() => chain) })) };
+    }) };
     const service = new IcalService(db as any, cfg as any);
 
     const ics = await service.exportCalendar(token);
 
     expect(ics).toContain('BEGIN:VEVENT');
-    expect(ics).toContain('UID:res-1@haip');
+    expect(ics).toMatch(/UID:haip-calendar-v1-[a-f0-9]{64}@haip/);
     expect(ics).toContain('DTSTART;VALUE=DATE:20260901');
     expect(ics).toContain('DTEND;VALUE=DATE:20260904');
   });

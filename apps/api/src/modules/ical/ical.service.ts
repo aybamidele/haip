@@ -7,7 +7,7 @@ import {
   UnauthorizedException,
 } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
-import { and, desc, eq, gt, lt, notInArray, sql } from 'drizzle-orm';
+import { and, desc, eq, gt, lt, inArray, notInArray, sql } from 'drizzle-orm';
 import { createHash, createHmac, randomBytes, timingSafeEqual } from 'node:crypto';
 import {
   auditLogs,
@@ -15,12 +15,14 @@ import {
   icalFeeds,
   reservations,
   roomTypes,
+  rooms,
 } from '@telivityhaip/database';
 import { DRIZZLE } from '../../database/database.module';
 import { UnsafeUrlError } from '../../common/security/url-guard';
 import { CalendarFetchError, fetchPublicCalendar } from './ical-fetch';
 import type { PostgresJsDatabase } from 'drizzle-orm/postgres-js';
 import type * as schema from '@telivityhaip/database';
+import { calendarExportSpans } from './ical-inventory';
 import {
   CreateIcalFeedDto,
   ListIcalBlocksDto,
@@ -41,6 +43,7 @@ interface ExportTokenPayload {
   feedId: string;
   propertyId: string;
   roomTypeId: string;
+  roomId?: string | null;
   nonce: string;
 }
 
@@ -53,6 +56,7 @@ export class IcalService {
 
   async create(dto: CreateIcalFeedDto) {
     await this.assertRoomTypeAtProperty(dto.roomTypeId, dto.propertyId);
+    if (dto.roomId) await this.assertRoomAtType(dto.roomId, dto.roomTypeId, dto.propertyId);
     if (dto.direction === 'import' && !dto.sourceUrl) {
       throw new BadRequestException('sourceUrl is required for import feeds');
     }
@@ -66,6 +70,7 @@ export class IcalService {
         .values({
           propertyId: dto.propertyId,
           roomTypeId: dto.roomTypeId,
+          roomId: dto.roomId ?? null,
           direction: dto.direction,
           name: dto.name,
           sourceUrl: dto.direction === 'import' ? dto.sourceUrl : null,
@@ -120,11 +125,16 @@ export class IcalService {
 
   async update(id: string, propertyId: string, dto: UpdateIcalFeedDto) {
     const existing = await this.findByIdRaw(id, propertyId);
+    if (dto.roomId !== undefined && existing.direction === 'export' && dto.roomId !== (existing.roomId ?? null)) {
+      throw new BadRequestException('Export unit mapping is fixed; create a new export calendar for another unit');
+    }
+    if (dto.roomId) await this.assertRoomAtType(dto.roomId, existing.roomTypeId, propertyId);
     if (existing.direction === 'export' && dto.sourceUrl) {
       throw new BadRequestException('sourceUrl is only valid for import feeds');
     }
 
     const patch: Record<string, unknown> = { updatedAt: new Date() };
+    if (dto.roomId !== undefined) patch['roomId'] = dto.roomId;
     if (dto.name !== undefined) patch['name'] = dto.name;
     if (dto.isActive !== undefined) patch['isActive'] = dto.isActive;
     if (dto.sourceUrl !== undefined) {
@@ -138,11 +148,18 @@ export class IcalService {
       }
     }
 
-    const [updated] = await this.db
-      .update(icalFeeds)
-      .set(patch)
-      .where(and(eq(icalFeeds.id, id), eq(icalFeeds.propertyId, propertyId)))
-      .returning();
+    const updated = await this.db.transaction(async tx => {
+      const [locked] = await tx.select().from(icalFeeds)
+        .where(and(eq(icalFeeds.id, id), eq(icalFeeds.propertyId, propertyId))).for('update');
+      if (!locked) throw new NotFoundException(`iCal feed ${id} not found`);
+      if (dto.roomId !== undefined) {
+        await tx.select({ id: roomTypes.id }).from(roomTypes)
+          .where(and(eq(roomTypes.id, locked.roomTypeId), eq(roomTypes.propertyId, propertyId))).for('update');
+      }
+      const [row] = await tx.update(icalFeeds).set(patch)
+        .where(and(eq(icalFeeds.id, id), eq(icalFeeds.propertyId, propertyId))).returning();
+      return row;
+    });
     if (!updated) throw new NotFoundException(`iCal feed ${id} not found`);
 
     await this.db.insert(auditLogs).values({
@@ -227,7 +244,14 @@ export class IcalService {
       try {
         const ics = await this.fetchIcs(feed.sourceUrl);
         if ((ics.match(/BEGIN:VEVENT/gi) ?? []).length > 10_000) throw new CalendarFetchError('Calendar contains too many events');
-        parsed = mergeBusyBlocks(parseIcsBusyBlocks(ics));
+        const events = parseIcsBusyBlocks(ics);
+        const legacyIds = events.map(block => /^([0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12})@haip$/i.exec(block.externalUid)?.[1])
+          .filter((id): id is string => Boolean(id));
+        const known = legacyIds.length ? await tx.select({ id: reservations.id }).from(reservations)
+          .where(and(eq(reservations.propertyId, propertyId), eq(reservations.roomTypeId, feed.roomTypeId), inArray(reservations.id, legacyIds))) : [];
+        const legacyUids = new Set(known.map(row => `${row.id}@haip`));
+        // Filter exact authenticated HAIP echoes before merging destroys UID identity.
+        parsed = mergeBusyBlocks(events.filter(block => !legacyUids.has(block.externalUid) && !this.isExportEcho(feed, block)));
       } catch (err) {
         // Parser/network errors can contain a private feed URL or guest summary.
         const error = err instanceof UnsafeUrlError || err instanceof CalendarFetchError
@@ -294,6 +318,7 @@ export class IcalService {
       .select({
         id: icalBlocks.id,
         feedId: icalBlocks.feedId,
+        roomId: icalFeeds.roomId,
         roomTypeId: icalBlocks.roomTypeId,
         startDate: icalBlocks.startDate,
         endDate: icalBlocks.endDate,
@@ -325,6 +350,7 @@ export class IcalService {
     const rows = await this.db
       .select({
         id: reservations.id,
+        roomId: reservations.roomId,
         arrivalDate: reservations.arrivalDate,
         departureDate: reservations.departureDate,
       })
@@ -338,10 +364,20 @@ export class IcalService {
       )
       .orderBy(reservations.arrivalDate);
 
-    return buildIcsCalendar(rows.map((row: any) => ({
-      uid: `${row.id}@haip`,
-      startDate: row.arrivalDate,
-      endDate: row.departureDate,
+    const units = await this.db.select({ id: rooms.id }).from(rooms)
+      .where(and(eq(rooms.propertyId, feed.propertyId), eq(rooms.roomTypeId, feed.roomTypeId), eq(rooms.isActive, true),
+        notInArray(rooms.status, ['out_of_order', 'out_of_service'])));
+    if (!units.length) throw new BadRequestException('Room type has no sellable units');
+    if (feed.roomId && !units.some(unit => unit.id === feed.roomId)) throw new BadRequestException('Calendar unit is not currently sellable');
+    const blocks = await this.db.select({ feedId: icalBlocks.feedId, roomId: icalFeeds.roomId,
+      startDate: icalBlocks.startDate, endDate: icalBlocks.endDate }).from(icalBlocks)
+      .innerJoin(icalFeeds, and(eq(icalFeeds.id, icalBlocks.feedId), eq(icalFeeds.propertyId, feed.propertyId),
+        eq(icalFeeds.isActive, true), eq(icalFeeds.direction, 'import')))
+      .where(and(eq(icalBlocks.propertyId, feed.propertyId), eq(icalBlocks.roomTypeId, feed.roomTypeId)));
+    if (rows.length + blocks.length > 10_000) throw new BadRequestException('Calendar export exceeds the supported event limit');
+    return buildIcsCalendar(calendarExportSpans(rows, blocks, new Set(units.map(unit => unit.id)), feed.roomId).map(span => ({
+      uid: this.exportEventUid(feed, span),
+      ...span,
       summary: 'Busy',
     })));
   }
@@ -365,6 +401,23 @@ export class IcalService {
     }
   }
 
+  private async assertRoomAtType(roomId: string, roomTypeId: string, propertyId: string) {
+    const [room] = await this.db.select({ id: rooms.id }).from(rooms)
+      .where(and(eq(rooms.id, roomId), eq(rooms.roomTypeId, roomTypeId), eq(rooms.propertyId, propertyId), eq(rooms.isActive, true)));
+    if (!room) throw new BadRequestException('Calendar unit must belong to the selected property and room type');
+  }
+
+  private exportEventUid(feed: Pick<IcalFeedRow, 'propertyId' | 'roomTypeId' | 'roomId'>, span: { startDate: string; endDate: string }): string {
+    const identity = [feed.propertyId, feed.roomTypeId, feed.roomId ?? 'pool', span.startDate, span.endDate].join('|');
+    return `haip-calendar-v1-${createHmac('sha256', this.signingSecret()).update(identity).digest('hex')}@haip`;
+  }
+
+  private isExportEcho(feed: IcalFeedRow, block: IcalBusyBlock): boolean {
+    if (!block.externalUid.startsWith('haip-calendar-v1-')) return false;
+    return safeEqual(block.externalUid, this.exportEventUid(feed, block))
+      || Boolean(feed.roomId && safeEqual(block.externalUid, this.exportEventUid({ ...feed, roomId: null }, block)));
+  }
+
   private async verifyExportToken(token: string): Promise<IcalFeedRow> {
     const payload = this.parseAndVerifyToken(token);
     const [feed] = await this.db
@@ -379,18 +432,19 @@ export class IcalService {
           eq(icalFeeds.isActive, true),
         ),
       );
-    if (!feed || !feed.tokenHash || feed.tokenHash !== hashToken(token)) {
+    if (!feed || (feed.roomId ?? null) !== (payload.roomId ?? null) || !feed.tokenHash || feed.tokenHash !== hashToken(token)) {
       throw new UnauthorizedException('Invalid iCal feed token');
     }
     return feed;
   }
 
-  private signExportToken(feed: Pick<IcalFeedRow, 'id' | 'propertyId' | 'roomTypeId'>): string {
+  private signExportToken(feed: Pick<IcalFeedRow, 'id' | 'propertyId' | 'roomTypeId' | 'roomId'>): string {
     const payload: ExportTokenPayload = {
       kind: 'ical-export',
       feedId: feed.id,
       propertyId: feed.propertyId,
       roomTypeId: feed.roomTypeId,
+      roomId: feed.roomId ?? null,
       nonce: randomBytes(16).toString('hex'),
     };
     const encoded = Buffer.from(JSON.stringify(payload)).toString('base64url');
@@ -472,6 +526,7 @@ export class IcalService {
       id: feed.id,
       propertyId: feed.propertyId,
       roomTypeId: feed.roomTypeId,
+      roomId: feed.roomId,
       direction: feed.direction,
       name: feed.name,
       hasSourceUrl: Boolean(feed.sourceUrl),
