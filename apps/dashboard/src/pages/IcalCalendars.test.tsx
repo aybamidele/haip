@@ -8,7 +8,7 @@ import type { IcalFeed, IcalFeedInput } from '../lib/ical';
 
 const mocks = vi.hoisted(() => ({
   propertyId: 'property-a', portfolio: false, roles: ['admin'],
-  feeds: vi.fn(), roomTypes: vi.fn(), create: vi.fn(), update: vi.fn(), remove: vi.fn(), sync: vi.fn(), rotate: vi.fn(), blocks: vi.fn(),
+  feeds: vi.fn(), roomTypes: vi.fn(), rooms: vi.fn(), create: vi.fn(), update: vi.fn(), remove: vi.fn(), sync: vi.fn(), rotate: vi.fn(), blocks: vi.fn(),
 }));
 vi.mock('../context/PropertyContext', () => ({ useProperty: () => ({ propertyId: mocks.propertyId, isPortfolioMode: mocks.portfolio, properties: [{ id: 'property-a', name: 'First property' }, { id: 'property-b', name: 'Second property' }] }) }));
 vi.mock('../context/AuthContext', () => ({ useAuth: () => ({ hasRole: (...roles: string[]) => roles.some(role => mocks.roles.includes(role)) }) }));
@@ -28,6 +28,7 @@ beforeEach(() => {
   vi.clearAllMocks(); mocks.propertyId = 'property-a'; mocks.portfolio = false; mocks.roles = ['admin']; feeds = [{ ...importFeed }];
   mocks.feeds.mockImplementation((propertyId: string) => Promise.resolve(feeds.filter(feed => feed.propertyId === propertyId)));
   mocks.roomTypes.mockImplementation((propertyId: string) => Promise.resolve([{ id: propertyId === 'property-a' ? 'room-a' : 'room-b', name: 'Standard room', propertyId }]));
+  mocks.rooms.mockImplementation((propertyId: string) => Promise.resolve([{ id: 'unit-'+propertyId, propertyId, roomTypeId: propertyId === 'property-a' ? 'room-a' : 'room-b', number: '101' }]));
   mocks.create.mockImplementation((input: IcalFeedInput) => { const feed: IcalFeed = { ...input, id: 'new-feed', sourceUrl: input.sourceUrl ?? null, isActive: true, lastSyncAt: null, lastSyncStatus: null }; feeds.push(feed); return Promise.resolve({ feed, ...(input.direction === 'export' ? { exportUrl: 'https://pms.example.test/api/v1/ical/export.ics?token=first' } : {}) }); });
   mocks.update.mockImplementation((propertyId: string, id: string, patch: Partial<IcalFeed>) => { const feed = feeds.find(entry => entry.propertyId === propertyId && entry.id === id)!; Object.assign(feed, patch); return Promise.resolve(feed); });
   mocks.remove.mockImplementation((_propertyId: string, id: string) => { feeds = feeds.filter(feed => feed.id !== id); return Promise.resolve(); });
@@ -83,7 +84,7 @@ describe('iCal calendars', () => {
     view(); await screen.findByText('External calendar');
     await userEvent.click(screen.getByRole('button', { name: 'Remove calendar' }));
     expect(within(screen.getByRole('dialog')).getByText('External calendar')).toBeInTheDocument();
-    expect(within(screen.getByRole('dialog')).getByText('First property · Standard room · Import')).toBeInTheDocument();
+    expect(within(screen.getByRole('dialog')).getByText('First property · Standard room · Legacy: one busy unit per feed · Import')).toBeInTheDocument();
     await userEvent.click(within(screen.getByRole('dialog')).getByRole('button', { name: 'Cancel' }));
     expect(mocks.remove).not.toHaveBeenCalled();
     await userEvent.click(screen.getByRole('button', { name: 'Remove calendar' }));
@@ -104,7 +105,7 @@ describe('iCal calendars', () => {
     await waitFor(() => expect(screen.getByRole('button', { name: 'Regenerate export URL' })).toBeEnabled());
     await userEvent.click(screen.getByRole('button', { name: 'Regenerate export URL' }));
     expect(within(screen.getByRole('dialog')).getByText('Direct calendar')).toBeInTheDocument();
-    expect(within(screen.getByRole('dialog')).getByText('First property · Standard room · Export')).toBeInTheDocument();
+    expect(within(screen.getByRole('dialog')).getByText('First property · Standard room · Room type: fully booked dates · Export')).toBeInTheDocument();
     expect(within(screen.getByRole('dialog')).getByText(/immediately invalidates/)).toBeInTheDocument();
     await userEvent.click(within(screen.getByRole('dialog')).getByRole('button', { name: 'Regenerate export URL' }));
     await waitFor(() => expect(screen.getByLabelText('Export calendar URL')).toHaveValue('https://pms.example.test/api/v1/ical/export.ics?token=second'));
@@ -147,4 +148,37 @@ describe('iCal calendars', () => {
     rendered.rerender(<MemoryRouter><QueryClientProvider client={new QueryClient({ defaultOptions: { queries: { retry: false } } })}><IcalCalendars /></QueryClientProvider></MemoryRouter>);
     await waitFor(() => expect(screen.queryByLabelText('Export calendar URL')).not.toBeInTheDocument());
   });
+  it('creates explicit shared-unit mappings and lets staff clear an import mapping', async () => {
+    view(); await screen.findByText('External calendar');
+    await userEvent.click(screen.getByRole('button', {name:'Add calendar'}));
+    await userEvent.type(screen.getByLabelText('Calendar name'), 'Mapped calendar');
+    await userEvent.selectOptions(screen.getByLabelText('Room type'),'room-a');
+    await userEvent.selectOptions(screen.getByLabelText('Physical unit (optional)'),'unit-property-a');
+    await userEvent.type(screen.getByLabelText('Import calendar URL'),'https://calendar.example.test/unit');
+    await userEvent.click(screen.getByRole('button',{name:'Save calendar'}));
+    await waitFor(()=>expect(mocks.create).toHaveBeenCalledWith(expect.objectContaining({roomId:'unit-property-a',propertyId:'property-a'})));
+    const section = await screen.findByRole('region',{name:'Mapped calendar'});
+    expect(within(section).getByText(/Unit 101/)).toBeInTheDocument();
+    await userEvent.click(within(section).getByRole('button',{name:'Edit calendar'}));
+    await userEvent.selectOptions(screen.getByLabelText('Physical unit (optional)'),'');
+    await userEvent.click(screen.getByRole('button',{name:'Save calendar'}));
+    await waitFor(()=>expect(mocks.update).toHaveBeenCalledWith('property-a','new-feed',expect.objectContaining({roomId:null})));
+  });
+  it('keeps export mapping fixed and searches a large unit list without losing the selected unit', async () => {
+    feeds=[{...importFeed,id:'export-a',direction:'export',roomId:'unit-property-a'}];
+    mocks.rooms.mockResolvedValue(Array.from({length:100},(_,i)=>({id:i===0?'unit-property-a':`unit-${i}`,propertyId:'property-a',roomTypeId:'room-a',number:String(i+101)})));
+    view(); await screen.findByText('External calendar');
+    await userEvent.click(screen.getByRole('button',{name:'Edit calendar'}));
+    expect(screen.getByLabelText('Physical unit (optional)')).toBeDisabled();
+    await userEvent.click(screen.getByRole('button',{name:'Cancel'}));
+    await userEvent.click(screen.getByRole('button',{name:'Add calendar'}));
+    await userEvent.selectOptions(screen.getByLabelText('Room type'),'room-a');
+    await userEvent.type(screen.getByRole('searchbox',{name:'Search units by number'}),'199');
+    expect(screen.getByRole('option',{name:'Unit 199'})).toBeInTheDocument();
+    expect(screen.queryByRole('option',{name:'Unit 101'})).not.toBeInTheDocument();
+    await userEvent.selectOptions(screen.getByLabelText('Physical unit (optional)'),'unit-98');
+    await userEvent.clear(screen.getByRole('searchbox',{name:'Search units by number'}));
+    expect(screen.getByLabelText('Physical unit (optional)')).toHaveValue('unit-98');
+  });
+
 });

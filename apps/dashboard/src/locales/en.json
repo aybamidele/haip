@@ -276,7 +276,7 @@
     "removeConnection": "Remove connection",
     "removeWarning": "This deactivates the connection and stops new synchronisation. Existing records and sync history are retained.",
     "removeFailed": "The connection could not be removed. Check your access and try again.",
-    "removing": "Removing\u2026",
+    "removing": "Removing…",
     "connectionRemoved": "Connection removed.",
     "action": "Action",
     "adapter": "Adapter",
@@ -2321,6 +2321,14 @@
     "rotateWarning": "This immediately invalidates the previous export URL. Update every channel using it with the new URL to keep calendar access working.",
     "remove": "Remove calendar",
     "removed": "Calendar removed.",
-    "removeWarning": "Remove this calendar? An import calendar’s blocked dates will be deleted and those dates may become bookable. An export calendar’s URL will stop working."
+    "removeWarning": "Remove this calendar? An import calendar’s blocked dates will be deleted and those dates may become bookable. An export calendar’s URL will stop working.",
+    "unit": "Physical unit (optional)",
+    "searchUnits": "Search units by number",
+    "legacyMapping": "Legacy: one busy unit per feed",
+    "pooledExport": "Room type: fully booked dates",
+    "unitUnavailable": "Unit unavailable",
+    "unitNumber": "Unit {{number}}",
+    "unitImportHelp": "Choose the same unit for Airbnb and Booking.com calendars that describe the same accommodation. They will block that unit once. Existing unmapped feeds keep their current behaviour.",
+    "unitExportHelp": "A unit export includes its reservations and imported blocks. Unassigned reservations and unmapped imports are included conservatively until staff assigns or maps them. A room-type export blocks only dates when the whole type is booked. Export mapping is fixed after creation."
   }
 }

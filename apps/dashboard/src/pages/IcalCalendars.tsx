@@ -20,6 +20,7 @@ export default function IcalCalendars() {
   const queryClient = useQueryClient();
   const canManage = hasRole('admin');
   const canSync = hasRole('admin', 'revenue_manager');
+  const [unitSearch, setUnitSearch] = useState('');
   const [draft, setDraft] = useState<Draft | null>(null);
   const [confirm, setConfirm] = useState<Confirm | null>(null);
   const [exportResult, setExportResult] = useState<{ name: string; url: string } | null>(null);
@@ -35,11 +36,11 @@ export default function IcalCalendars() {
     queryKey: ['ical-feeds', scopes], enabled: scopes.length > 0 && canSync, retry: false,
     queryFn: async () => {
       const result = await Promise.all(scopes.map(async id => {
-        const [feeds, roomTypes] = await Promise.all([icalApi.feeds(id), icalApi.roomTypes(id)]);
-        if (!Array.isArray(feeds) || !Array.isArray(roomTypes) || feeds.some(feed => feed.propertyId !== id) || roomTypes.some(type => type.propertyId !== id)) throw new Error('Invalid scoped calendar response');
-        return { feeds, roomTypes };
+        const [feeds, roomTypes, rooms] = await Promise.all([icalApi.feeds(id), icalApi.roomTypes(id), icalApi.rooms(id)]);
+        if (!Array.isArray(feeds) || !Array.isArray(roomTypes) || !Array.isArray(rooms) || rooms.some(room => room.propertyId !== id) || feeds.some(feed => feed.propertyId !== id) || roomTypes.some(type => type.propertyId !== id)) throw new Error('Invalid scoped calendar response');
+        return { feeds, roomTypes, rooms };
       }));
-      return { feeds: result.flatMap(entry => entry.feeds), roomTypes: result.flatMap(entry => entry.roomTypes) };
+      return { feeds: result.flatMap(entry => entry.feeds), roomTypes: result.flatMap(entry => entry.roomTypes), rooms: result.flatMap(entry => entry.rooms) };
     },
   });
   const blocked = useQuery({
@@ -53,6 +54,7 @@ export default function IcalCalendars() {
     if (!confirm && dialog?.open) dialog.close();
   }, [confirm]);
   useEffect(() => {
+    setUnitSearch('');
     if (draft) { formRef.current?.scrollIntoView({ block: 'nearest' }); formRef.current?.querySelector<HTMLInputElement>('#ical-name')?.focus(); }
   }, [draft?.id, draft !== null]);
 
@@ -77,9 +79,9 @@ export default function IcalCalendars() {
       setNotice({ error: true, text: t('ical.invalidForm') }); return;
     }
     await run(async () => {
-      if (current.id) await icalApi.update(current.propertyId, current.id, { name: current.name.trim(), ...(current.direction === 'import' ? { sourceUrl: current.sourceUrl!.trim() } : {}) });
+      if (current.id) await icalApi.update(current.propertyId, current.id, { name: current.name.trim(), ...(current.direction === 'import' && (current.roomId ?? null) !== (data?.feeds.find(feed => feed.id === current.id)?.roomId ?? null) ? { roomId: current.roomId ?? null } : {}), ...(current.direction === 'import' ? { sourceUrl: current.sourceUrl!.trim() } : {}) });
       else {
-        const result = await icalApi.create({ propertyId: current.propertyId, roomTypeId: current.roomTypeId, direction: current.direction, name: current.name.trim(), ...(current.direction === 'import' ? { sourceUrl: current.sourceUrl!.trim() } : {}) });
+        const result = await icalApi.create({ propertyId: current.propertyId, roomTypeId: current.roomTypeId, ...(current.roomId ? { roomId: current.roomId } : {}), direction: current.direction, name: current.name.trim(), ...(current.direction === 'import' ? { sourceUrl: current.sourceUrl!.trim() } : {}) });
         if (result.exportUrl && scopeRef.current === scope && validCalendarUrl(result.exportUrl)) setExportResult({ name: result.feed.name, url: result.exportUrl });
       }
       if (scopeRef.current === scope) setDraft(null);
@@ -87,6 +89,9 @@ export default function IcalCalendars() {
   }
   const roomTypes = data?.roomTypes ?? [];
   const feeds = data?.feeds ?? [];
+  const rooms = data?.rooms ?? [];
+  const selectedRooms = rooms.filter(room => room.propertyId === draft?.propertyId && room.roomTypeId === draft?.roomTypeId);
+  const visibleRooms = selectedRooms.filter(room => room.id === draft?.roomId || room.number.toLocaleLowerCase().includes(unitSearch.trim().toLocaleLowerCase()));
   const back = `/channels${propertyId ? `?propertyId=${encodeURIComponent(propertyId)}` : ''}`;
   const selectedRoomTypes = roomTypes.filter(type => type.propertyId === draft?.propertyId);
 
@@ -111,8 +116,16 @@ export default function IcalCalendars() {
       <form onSubmit={event => void submit(event)} className="grid gap-5 sm:grid-cols-2" aria-busy={busy}>
         <div><label htmlFor="ical-name" className="mb-2 block text-sm font-medium">{t('ical.name')}</label><input id="ical-name" className={input} value={draft.name} required maxLength={120} disabled={busy} onChange={event => setDraft({ ...draft, name: event.target.value })} /></div>
         <div><label htmlFor="ical-direction" className="mb-2 block text-sm font-medium">{t('ical.direction')}</label><select id="ical-direction" className={input} value={draft.direction} disabled={busy || !!draft.id} onChange={event => setDraft({ ...draft, direction: event.target.value as Draft['direction'] })}><option value="import">{t('ical.import')}</option><option value="export">{t('ical.export')}</option></select></div>
-        <div><label htmlFor="ical-property" className="mb-2 block text-sm font-medium">{t('ical.property')}</label><select id="ical-property" className={input} required value={draft.propertyId} disabled={busy || !!draft.id || !isPortfolioMode} onChange={event => setDraft({ ...draft, propertyId: event.target.value, roomTypeId: '' })}><option value="">{t('ical.chooseProperty')}</option>{properties.map(property => <option key={property.id} value={property.id}>{property.name}</option>)}</select></div>
-        <div><label htmlFor="ical-room-type" className="mb-2 block text-sm font-medium">{t('ical.roomType')}</label><select id="ical-room-type" className={input} required value={draft.roomTypeId} disabled={busy || !!draft.id} onChange={event => setDraft({ ...draft, roomTypeId: event.target.value })}><option value="">{t('ical.chooseRoomType')}</option>{selectedRoomTypes.map(type => <option key={type.id} value={type.id}>{type.name}</option>)}</select></div>
+        <div><label htmlFor="ical-property" className="mb-2 block text-sm font-medium">{t('ical.property')}</label><select id="ical-property" className={input} required value={draft.propertyId} disabled={busy || !!draft.id || !isPortfolioMode} onChange={event => { setUnitSearch(''); setDraft({ ...draft, propertyId: event.target.value, roomTypeId: '', roomId: null }); }}><option value="">{t('ical.chooseProperty')}</option>{properties.map(property => <option key={property.id} value={property.id}>{property.name}</option>)}</select></div>
+        <div><label htmlFor="ical-room-type" className="mb-2 block text-sm font-medium">{t('ical.roomType')}</label><select id="ical-room-type" className={input} required value={draft.roomTypeId} disabled={busy || !!draft.id} onChange={event => { setUnitSearch(''); setDraft({ ...draft, roomTypeId: event.target.value, roomId: null }); }}><option value="">{t('ical.chooseRoomType')}</option>{selectedRoomTypes.map(type => <option key={type.id} value={type.id}>{type.name}</option>)}</select></div>
+        <div className="sm:col-span-2"><label htmlFor="ical-room" className="mb-2 block text-sm font-medium">{t('ical.unit')}</label>
+          {selectedRooms.length > 12 && <input type="search" className={`${input} mb-2`} aria-label={t('ical.searchUnits')} placeholder={t('ical.searchUnits')} value={unitSearch} disabled={busy || !!draft.id && draft.direction === 'export'} onChange={event => setUnitSearch(event.target.value)} />}
+          <select id="ical-room" className={input} value={draft.roomId ?? ''} disabled={busy || !draft.roomTypeId || !!draft.id && draft.direction === 'export'} aria-describedby="ical-room-help" onChange={event => setDraft({ ...draft, roomId: event.target.value || null })}>
+            <option value="">{draft.direction === 'import' ? t('ical.legacyMapping') : t('ical.pooledExport')}</option>
+            {draft.roomId && !selectedRooms.some(room => room.id === draft.roomId) && <option value={draft.roomId} disabled>{t('ical.unitUnavailable')}</option>}
+            {visibleRooms.map(room => <option key={room.id} value={room.id}>{t('ical.unitNumber', { number: room.number })}</option>)}
+          </select><p id="ical-room-help" className="mt-2 max-w-3xl text-sm text-telivity-slate">{draft.direction === 'import' ? t('ical.unitImportHelp') : t('ical.unitExportHelp')}</p>
+        </div>
         {draft.direction === 'import' && <div className="sm:col-span-2"><label htmlFor="ical-source" className="mb-2 block text-sm font-medium">{t('ical.sourceUrl')}</label><input id="ical-source" type="url" className={input} value={draft.sourceUrl ?? ''} required disabled={busy} aria-describedby="ical-source-help" onChange={event => setDraft({ ...draft, sourceUrl: event.target.value })} /><p id="ical-source-help" className="mt-2 text-sm text-telivity-slate">{t('ical.sourceHelp')}</p></div>}
         <div className="flex flex-wrap gap-2 sm:col-span-2"><button type="submit" className={primary} disabled={busy}>{busy ? t('ical.saving') : t('ical.save')}</button><button type="button" className={control} disabled={busy} onClick={() => setDraft(null)}>{t('common.cancel')}</button></div>
       </form>
@@ -122,10 +135,10 @@ export default function IcalCalendars() {
     {data && feeds.length === 0 && <div className="rounded-xl border border-gray-200 bg-white px-6 py-10"><h2 className="font-semibold text-telivity-navy">{t('ical.empty')}</h2><p className="mt-2 text-sm text-telivity-slate">{canManage ? t('ical.emptyHelp') : t('ical.emptyReadOnly')}</p></div>}
     {feeds.length > 0 && <div className="divide-y divide-gray-200 rounded-xl border border-gray-200 bg-white">
       {feeds.map(feed => <section key={feed.id} aria-label={feed.name} className="p-5">
-        <div className="flex flex-wrap items-start justify-between gap-4"><div className="min-w-0"><h2 className="break-words font-semibold text-telivity-navy">{feed.name}</h2><p className="mt-1 text-sm text-telivity-slate">{properties.find(property => property.id === feed.propertyId)?.name} · {roomTypes.find(type => type.id === feed.roomTypeId)?.name} · {feed.direction === 'import' ? t('ical.import') : t('ical.export')}</p><p className="mt-2 text-sm text-telivity-slate">{feed.isActive ? t('ical.active') : t('ical.inactive')}{feed.direction === 'import' && <> · {feed.lastSyncAt ? t('ical.lastSync', { time: new Date(feed.lastSyncAt).toLocaleString(i18n.resolvedLanguage) }) : t('ical.neverSynced')}{feed.lastSyncStatus === 'failed' && <span className="ml-2 text-red-700">{t('ical.syncFailed')}</span>}</>}</p></div>
+        <div className="flex flex-wrap items-start justify-between gap-4"><div className="min-w-0"><h2 className="break-words font-semibold text-telivity-navy">{feed.name}</h2><p className="mt-1 text-sm text-telivity-slate">{properties.find(property => property.id === feed.propertyId)?.name} · {roomTypes.find(type => type.id === feed.roomTypeId)?.name} · {feed.roomId ? t('ical.unitNumber', { number: rooms.find(room => room.id === feed.roomId)?.number ?? t('ical.unitUnavailable') }) : feed.direction === 'import' ? t('ical.legacyMapping') : t('ical.pooledExport')} · {feed.direction === 'import' ? t('ical.import') : t('ical.export')}</p><p className="mt-2 text-sm text-telivity-slate">{feed.isActive ? t('ical.active') : t('ical.inactive')}{feed.direction === 'import' && <> · {feed.lastSyncAt ? t('ical.lastSync', { time: new Date(feed.lastSyncAt).toLocaleString(i18n.resolvedLanguage) }) : t('ical.neverSynced')}{feed.lastSyncStatus === 'failed' && <span className="ml-2 text-red-700">{t('ical.syncFailed')}</span>}</>}</p></div>
           <div className="flex flex-wrap gap-2">
             {feed.direction === 'import' && <><button type="button" className={control} disabled={busy || !feed.isActive} onClick={() => void run(() => icalApi.sync(feed.propertyId, feed.id), t('ical.synced'))}>{t('ical.sync')}</button><button type="button" className={control} disabled={busy} onClick={() => setBlocksFor(blocksFor?.id === feed.id ? null : feed)} aria-expanded={blocksFor?.id === feed.id} aria-controls={`ical-blocks-${feed.id}`}>{t('ical.viewDates')}</button></>}
-            {canManage && <><button type="button" className={control} disabled={busy} onClick={() => setDraft({ id: feed.id, propertyId: feed.propertyId, roomTypeId: feed.roomTypeId, direction: feed.direction, name: feed.name, ...(feed.sourceUrl ? { sourceUrl: feed.sourceUrl } : {}) })}>{t('ical.edit')}</button><button type="button" className={control} disabled={busy} onClick={() => void run(async () => { await icalApi.update(feed.propertyId, feed.id, { isActive: !feed.isActive }); }, t('ical.saved'))}>{feed.isActive ? t('ical.deactivate') : t('ical.activate')}</button>{feed.direction === 'export' && <button type="button" className={control} disabled={busy} onClick={() => setConfirm({ kind: 'rotate', feed })}>{t('ical.regenerate')}</button>}<button type="button" className={control} disabled={busy} onClick={() => setConfirm({ kind: 'remove', feed })}>{t('ical.remove')}</button></>}
+            {canManage && <><button type="button" className={control} disabled={busy} onClick={() => setDraft({ id: feed.id, propertyId: feed.propertyId, roomTypeId: feed.roomTypeId, roomId: feed.roomId, direction: feed.direction, name: feed.name, ...(feed.sourceUrl ? { sourceUrl: feed.sourceUrl } : {}) })}>{t('ical.edit')}</button><button type="button" className={control} disabled={busy} onClick={() => void run(async () => { await icalApi.update(feed.propertyId, feed.id, { isActive: !feed.isActive }); }, t('ical.saved'))}>{feed.isActive ? t('ical.deactivate') : t('ical.activate')}</button>{feed.direction === 'export' && <button type="button" className={control} disabled={busy} onClick={() => setConfirm({ kind: 'rotate', feed })}>{t('ical.regenerate')}</button>}<button type="button" className={control} disabled={busy} onClick={() => setConfirm({ kind: 'remove', feed })}>{t('ical.remove')}</button></>}
           </div>
         </div>
         {blocksFor?.id === feed.id && <div id={`ical-blocks-${feed.id}`} className="mt-4 border-t border-gray-100 pt-4">{blocked.isPending ? <p role="status">{t('ical.loadingDates')}</p> : blocked.isError ? <p role="alert">{t('ical.loadFailed')}</p> : <><h3 className="mb-3 text-sm font-semibold">{t('ical.blockedDates')}</h3>{blocked.data?.length ? <ul className="space-y-2 text-sm text-telivity-slate">{blocked.data.map((block, index) => <li key={`${block.externalUid}-${index}`}>{block.startDate} → {block.endDate} <span>{t('ical.checkoutExclusive')}</span></li>)}</ul> : <p className="text-sm text-telivity-slate">{t('ical.noBlocks')}</p>}</>}</div>}
@@ -134,7 +147,7 @@ export default function IcalCalendars() {
     <p className="mt-5 max-w-3xl text-sm text-telivity-slate">{t('ical.syncHelp')}</p>
     <dialog ref={confirmRef} onCancel={event => { if (busy) event.preventDefault(); else setConfirm(null); }} onClose={() => setConfirm(null)} className="w-full max-w-md rounded-xl border-0 bg-white p-6 shadow-xl backdrop:bg-black/40" aria-labelledby="ical-confirm-title" aria-describedby="ical-confirm-target ical-confirm-description">
       <h2 id="ical-confirm-title" className="text-lg font-semibold text-telivity-navy">{confirm?.kind === 'rotate' ? t('ical.regenerate') : t('ical.remove')}</h2>
-      {confirm && <div id="ical-confirm-target" className="mt-4 break-words text-sm"><p className="font-semibold text-telivity-navy">{confirm.feed.name}</p><p className="mt-1 text-telivity-slate">{properties.find(property => property.id === confirm.feed.propertyId)?.name} · {roomTypes.find(type => type.id === confirm.feed.roomTypeId)?.name} · {confirm.feed.direction === 'import' ? t('ical.import') : t('ical.export')}</p></div>}
+      {confirm && <div id="ical-confirm-target" className="mt-4 break-words text-sm"><p className="font-semibold text-telivity-navy">{confirm.feed.name}</p><p className="mt-1 text-telivity-slate">{properties.find(property => property.id === confirm.feed.propertyId)?.name} · {roomTypes.find(type => type.id === confirm.feed.roomTypeId)?.name} · {confirm.feed.roomId ? t('ical.unitNumber', { number: rooms.find(room => room.id === confirm.feed.roomId)?.number ?? t('ical.unitUnavailable') }) : confirm.feed.direction === 'import' ? t('ical.legacyMapping') : t('ical.pooledExport')} · {confirm.feed.direction === 'import' ? t('ical.import') : t('ical.export')}</p></div>}
       <p id="ical-confirm-description" className="my-4 text-sm text-telivity-slate">{confirm?.kind === 'rotate' ? t('ical.rotateWarning') : t('ical.removeWarning')}</p>
       {notice?.error && <p role="alert" className="mb-4 text-sm text-red-700">{notice.text}</p>}
       <div className="flex flex-wrap justify-end gap-2"><button type="button" className={control} disabled={busy} onClick={() => setConfirm(null)}>{t('common.cancel')}</button><button type="button" className={primary} disabled={busy} onClick={() => {

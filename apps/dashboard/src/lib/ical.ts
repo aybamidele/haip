@@ -1,14 +1,15 @@
 import { api } from './api';
 
 export interface IcalFeed {
-  id: string; propertyId: string; roomTypeId: string; name: string;
+  id: string; propertyId: string; roomTypeId: string; roomId?: string | null; name: string;
   direction: 'import' | 'export'; sourceUrl: string | null; isActive: boolean;
   lastSyncAt: string | null; lastSyncStatus: string | null;
 }
 export interface IcalRoomType { id: string; propertyId: string; name: string }
+export interface IcalRoom { id: string; propertyId: string; roomTypeId: string; number: string }
 export interface IcalBlock { externalUid: string; startDate: string; endDate: string }
 export interface IcalFeedInput {
-  propertyId: string; roomTypeId: string; direction: 'import' | 'export'; name: string; sourceUrl?: string;
+  propertyId: string; roomTypeId: string; roomId?: string | null; direction: 'import' | 'export'; name: string; sourceUrl?: string;
 }
 export interface IcalFeedResult { feed: IcalFeed; exportUrl?: string }
 const config = (propertyId: string) => ({ params: { propertyId }, skipErrorToast: true, timeout: 30_000 });
@@ -19,6 +20,7 @@ function publicFeed(feed: IcalFeed): IcalFeed {
     id: feed.id,
     propertyId: feed.propertyId,
     roomTypeId: feed.roomTypeId,
+    roomId: feed.roomId,
     name: feed.name,
     direction: feed.direction,
     sourceUrl: feed.sourceUrl,
@@ -42,8 +44,9 @@ function publicResult(result: IcalFeedResult): IcalFeedResult {
 export const icalApi = {
   feeds: (propertyId: string) => api.get<IcalFeed[]>('/v1/ical/feeds', config(propertyId)).then(r => publicFeeds(r.data)),
   roomTypes: (propertyId: string) => api.get<IcalRoomType[]>('/v1/rooms/types', config(propertyId)).then(r => r.data),
+  rooms: (propertyId: string) => api.get<IcalRoom[]>('/v1/rooms', config(propertyId)).then(r => r.data),
   create: (input: IcalFeedInput) => api.post<IcalFeedResult>('/v1/ical/feeds', input, config(input.propertyId)).then(r => publicResult(r.data)),
-  update: (propertyId: string, id: string, patch: { name?: string; sourceUrl?: string; isActive?: boolean }) => api.patch<IcalFeed>(feedPath(id), patch, config(propertyId)).then(r => (r.data && !Array.isArray(r.data) ? publicFeed(r.data) : r.data)),
+  update: (propertyId: string, id: string, patch: { roomId?: string | null; name?: string; sourceUrl?: string; isActive?: boolean }) => api.patch<IcalFeed>(feedPath(id), patch, config(propertyId)).then(r => (r.data && !Array.isArray(r.data) ? publicFeed(r.data) : r.data)),
   remove: (propertyId: string, id: string) => api.delete(feedPath(id), config(propertyId)).then(() => undefined),
   sync: (propertyId: string, id: string) => api.post(`${feedPath(id)}/sync`, {}, config(propertyId)).then(() => undefined),
   rotate: (propertyId: string, id: string) => api.post<IcalFeedResult>(`${feedPath(id)}/rotate-token`, {}, config(propertyId)).then(r => publicResult(r.data)),

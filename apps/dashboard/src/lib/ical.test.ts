@@ -5,7 +5,7 @@ import { icalApi, validCalendarUrl } from './ical';
 beforeEach(() => { vi.clearAllMocks(); for (const mock of Object.values(mocks)) mock.mockResolvedValue({ data: [] }); });
 describe('iCal HTTP boundary', () => {
   it('sends explicit property scope and suppresses raw error logging on every operation', async () => {
-    await icalApi.feeds('property-a'); await icalApi.roomTypes('property-a');
+    await icalApi.feeds('property-a'); await icalApi.roomTypes('property-a'); await icalApi.rooms('property-a');
     await icalApi.create({ propertyId: 'property-a', roomTypeId: 'room-a', direction: 'export', name: 'Export' });
     await icalApi.update('property-a', 'feed-a', { isActive: false }); await icalApi.remove('property-a', 'feed-a');
     await icalApi.sync('property-a', 'feed-a'); await icalApi.rotate('property-a', 'feed-a'); await icalApi.blocks('property-a', 'feed-a');
