@@ -2308,7 +2308,7 @@
     "loadingDates": "Loading blocked dates…",
     "noBlocks": "No imported blocked dates.",
     "checkoutExclusive": "(checkout date excluded)",
-    "syncHelp": "Updates are manual here: use Sync now to fetch an import calendar. An iCal feed contains blocked dates, not guest details or payments. Verify room-type and shared-unit mapping before connecting live OTA listings.",
+    "syncHelp": "Use Sync now to refresh an import calendar immediately. Calendars also update automatically when background refresh is configured. Use Refresh to see the latest status. iCal contains blocked dates, not guest details or payments. Verify room-type and shared-unit mapping before connecting live OTA listings.",
     "exportReady": "Export URL for {{name}}",
     "exportUrl": "Export calendar URL",
     "exportHelp": "Save this private URL now and paste it into your booking channel. It is shown only after creation or regeneration. Regenerating it later invalidates the previous URL.",
