@@ -1371,6 +1371,7 @@ export class ReservationService {
           roomTypeName: roomTypes.name,
           ratePlanName: ratePlans.name,
           confirmationNumber: bookings.confirmationNumber,
+          bookingSource: bookings.source,
         })
         .from(reservations)
         .leftJoin(guests, eq(reservations.guestId, guests.id))
@@ -1391,6 +1392,7 @@ export class ReservationService {
     const data = rows.map((r: any) => ({
       ...r.reservation,
       confirmationNumber: r.confirmationNumber ?? null,
+      source: r.bookingSource ?? null,
       guestName: r.guestFirstName ? `${r.guestFirstName} ${r.guestLastName}` : null,
       guest: r.guestFirstName
         ? {

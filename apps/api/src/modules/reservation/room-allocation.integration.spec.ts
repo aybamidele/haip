@@ -72,6 +72,17 @@ describe.skipIf(!databaseUrl)('physical room allocation on PostgreSQL', () => {
     const [feed] = await db.insert(schema.icalFeeds).values({ propertyId, roomTypeId, roomId, name: 'Synthetic source', direction: values.direction ?? 'import', isActive: values.isActive ?? true, lastSyncStatus: 'failed' }).returning();
     await db.insert(schema.icalBlocks).values({ propertyId, roomTypeId, feedId: feed!.id, externalUid: randomUUID(), sourceChecksum: 'synthetic-checksum', startDate: values.startDate ?? '2027-11-02', endDate: values.endDate ?? '2027-11-03' });
   }
+  it('returns the joined booking source on scoped reservation reads', async () => {
+    const own = await reservation();
+    let listed = await service.list({ propertyId, guestId: own.guestId });
+    expect(listed.data).toHaveLength(1);
+    expect(listed.data[0].source).toBe('direct');
+    expect(listed.data[0].confirmationNumber).toBe(bookingId);
+    await db.update(schema.bookings).set({ source: 'ota' }).where(eq(schema.bookings.id, bookingId));
+    listed = await service.list({ propertyId, guestId: own.guestId });
+    expect(listed.data[0].source).toBe('ota');
+    expect((await service.list({ propertyId: randomUUID(), guestId: own.guestId })).data).toEqual([]);
+  });
   it('admits exactly one of two simultaneous overlapping assignments to the same unit', async () => {
     const a = await reservation(), b = await reservation();
     const results = await Promise.allSettled([service.assignRoom(a.id, propertyId, { roomId: unitA }), service.assignRoom(b.id, propertyId, { roomId: unitA })]);
