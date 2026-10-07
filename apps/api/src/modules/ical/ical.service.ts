@@ -1,12 +1,13 @@
 import {
   BadRequestException,
+  ConflictException,
   Inject,
   Injectable,
   NotFoundException,
   UnauthorizedException,
 } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
-import { and, desc, eq, gt, lt, notInArray } from 'drizzle-orm';
+import { and, desc, eq, gt, lt, notInArray, sql } from 'drizzle-orm';
 import { createHash, createHmac, randomBytes, timingSafeEqual } from 'node:crypto';
 import {
   auditLogs,
@@ -16,7 +17,10 @@ import {
   roomTypes,
 } from '@telivityhaip/database';
 import { DRIZZLE } from '../../database/database.module';
-import { assertSafeOutboundUrl, UnsafeUrlError } from '../../common/security/url-guard';
+import { UnsafeUrlError } from '../../common/security/url-guard';
+import { CalendarFetchError, fetchPublicCalendar } from './ical-fetch';
+import type { PostgresJsDatabase } from 'drizzle-orm/postgres-js';
+import type * as schema from '@telivityhaip/database';
 import {
   CreateIcalFeedDto,
   ListIcalBlocksDto,
@@ -29,8 +33,6 @@ import {
   parseIcsBusyBlocks,
   type IcalBusyBlock,
 } from './ical.util';
-
-const IMPORT_TIMEOUT_MS = 15_000;
 
 type IcalFeedRow = typeof icalFeeds.$inferSelect;
 
@@ -45,7 +47,7 @@ interface ExportTokenPayload {
 @Injectable()
 export class IcalService {
   constructor(
-    @Inject(DRIZZLE) private readonly db: any,
+    @Inject(DRIZZLE) private readonly db: PostgresJsDatabase<typeof schema>,
     private readonly config: ConfigService,
   ) {}
 
@@ -58,7 +60,7 @@ export class IcalService {
       throw new BadRequestException('sourceUrl is only valid for import feeds');
     }
 
-    const result = await this.db.transaction(async (tx: any) => {
+    const result = await this.db.transaction(async (tx) => {
       const [feed] = await tx
         .insert(icalFeeds)
         .values({
@@ -70,6 +72,7 @@ export class IcalService {
         })
         .returning();
 
+      if (!feed) throw new Error('Calendar feed creation failed');
       let exportUrl: string | undefined;
       if (dto.direction === 'export') {
         const token = this.signExportToken(feed);
@@ -149,7 +152,10 @@ export class IcalService {
   async delete(id: string, propertyId: string) {
     const existing = await this.findByIdRaw(id, propertyId);
 
-    await this.db.transaction(async (tx: any) => {
+    await this.db.transaction(async (tx) => {
+      // Follow the import lock order so deletion cannot race a snapshot replacement.
+      await tx.select({ id: icalFeeds.id }).from(icalFeeds)
+        .where(and(eq(icalFeeds.id, id), eq(icalFeeds.propertyId, propertyId))).for('update');
       await tx
         .delete(icalBlocks)
         .where(and(eq(icalBlocks.feedId, id), eq(icalBlocks.propertyId, propertyId)));
@@ -194,62 +200,61 @@ export class IcalService {
     return { feed: this.publicFeed(updated), exportUrl: this.exportUrlForToken(token) };
   }
 
-  async syncImportFeed(id: string, propertyId: string) {
-    const feed = await this.findByIdRaw(id, propertyId);
-    if (feed.direction !== 'import') {
-      throw new BadRequestException('Only import feeds can be synced');
-    }
-    if (!feed.isActive) {
-      throw new BadRequestException('Inactive import feeds cannot be synced');
-    }
-    if (!feed.sourceUrl) {
-      throw new BadRequestException('Import feed has no sourceUrl');
-    }
+  async syncImportFeed(id: string, propertyId: string, dueBefore?: Date) {
+    // Check scope before SKIP LOCKED so a busy row is not confused with an absent tenant row.
+    await this.findByIdRaw(id, propertyId);
+    const result = await this.db.transaction(async (tx) => {
+      const [feed] = await tx.select().from(icalFeeds)
+        .where(and(eq(icalFeeds.id, id), eq(icalFeeds.propertyId, propertyId)))
+        .for('update', { skipLocked: true });
+      if (!feed) return { skipped: true as const };
+      if (dueBefore && feed.lastSyncAt && feed.lastSyncAt > dueBefore) return { skipped: true as const };
+      if (feed.direction !== 'import' || !feed.isActive || !feed.sourceUrl) {
+        if (dueBefore) return { skipped: true as const };
+        throw new BadRequestException('Only active import feeds with a source URL can be synced');
+      }
 
-    try {
-      await assertSafeOutboundUrl(feed.sourceUrl);
-      const ics = await this.fetchIcs(feed.sourceUrl);
-      const parsed = mergeBusyBlocks(parseIcsBusyBlocks(ics));
+      let parsed: IcalBusyBlock[];
+      try {
+        const ics = await this.fetchIcs(feed.sourceUrl);
+        if ((ics.match(/BEGIN:VEVENT/gi) ?? []).length > 10_000) throw new CalendarFetchError('Calendar contains too many events');
+        parsed = mergeBusyBlocks(parseIcsBusyBlocks(ics));
+      } catch (err) {
+        // Parser/network errors can contain a private feed URL or guest summary.
+        const error = err instanceof UnsafeUrlError || err instanceof CalendarFetchError
+          ? err.message : 'Invalid or unsupported calendar';
+        await tx.update(icalFeeds).set({
+          lastSyncAt: new Date(), lastSyncStatus: 'failed', lastSyncError: error,
+          consecutiveSyncFailures: sql`${icalFeeds.consecutiveSyncFailures} + 1`, updatedAt: new Date(),
+        }).where(and(eq(icalFeeds.id, id), eq(icalFeeds.propertyId, propertyId)));
+        // Commit only failure metadata; the previous busy snapshot remains intact.
+        return { error };
+      }
+
+      // Share canonical reservation creation's inventory mutex for replacement.
+      await tx.select({ id: roomTypes.id }).from(roomTypes)
+        .where(and(eq(roomTypes.id, feed.roomTypeId), eq(roomTypes.propertyId, propertyId)))
+        .for('update');
       const values = parsed.map((block) => this.blockInsertValue(feed, block));
-
-      const result = await this.db.transaction(async (tx: any) => {
-        await tx
-          .delete(icalBlocks)
-          .where(and(eq(icalBlocks.feedId, id), eq(icalBlocks.propertyId, propertyId)));
-        if (values.length > 0) {
-          await tx.insert(icalBlocks).values(values);
-        }
-        const [updated] = await tx
-          .update(icalFeeds)
-          .set({
-            lastSyncAt: new Date(),
-            lastSyncStatus: 'success',
-            lastSyncError: null,
-            updatedAt: new Date(),
-          })
-          .where(and(eq(icalFeeds.id, id), eq(icalFeeds.propertyId, propertyId)))
-          .returning();
-        await tx.insert(auditLogs).values({
-          propertyId,
-          action: 'update',
-          entityType: 'ical_feed',
-          entityId: id,
-          newValue: { blocksImported: values.length },
-          description: 'ical_feed.synced',
-        });
-        return updated;
+      await tx.delete(icalBlocks).where(and(eq(icalBlocks.feedId, id), eq(icalBlocks.propertyId, propertyId)));
+      if (values.length > 0) await tx.insert(icalBlocks).values(values);
+      const now = new Date();
+      const [updated] = await tx.update(icalFeeds).set({
+        lastSyncAt: now, lastSuccessfulSyncAt: now, consecutiveSyncFailures: 0,
+        lastSyncStatus: 'success', lastSyncError: null, updatedAt: now,
+      }).where(and(eq(icalFeeds.id, id), eq(icalFeeds.propertyId, propertyId))).returning();
+      await tx.insert(auditLogs).values({
+        propertyId, action: 'update', entityType: 'ical_feed', entityId: id,
+        newValue: { blocksImported: values.length }, description: 'ical_feed.synced',
       });
-
-      return { feed: this.publicFeed(result), blocksImported: values.length };
-    } catch (err) {
-      const message = err instanceof UnsafeUrlError
-        ? err.message
-        : err instanceof Error
-          ? err.message
-          : 'Unknown iCal sync error';
-      await this.markSyncFailed(id, propertyId, message);
-      throw new BadRequestException(`iCal import failed: ${message}`);
+      return { feed: this.publicFeed(updated!), blocksImported: values.length };
+    });
+    if ('error' in result) throw new BadRequestException(`iCal import failed: ${result.error}`);
+    if ('skipped' in result) {
+      if (dueBefore) return { skipped: true as const };
+      throw new ConflictException('Calendar sync is already running; refresh its status shortly');
     }
+    return result;
   }
 
   async listBlocks(feedId: string, dto: ListIcalBlocksDto) {
@@ -429,18 +434,8 @@ export class IcalService {
     );
   }
 
-  private async fetchIcs(url: string): Promise<string> {
-    const controller = new AbortController();
-    const timer = setTimeout(() => controller.abort(), IMPORT_TIMEOUT_MS);
-    try {
-      const response = await fetch(url, { redirect: 'manual', signal: controller.signal });
-      if (!response.ok) {
-        throw new Error(`HTTP ${response.status}`);
-      }
-      return await response.text();
-    } finally {
-      clearTimeout(timer);
-    }
+  private fetchIcs(url: string): Promise<string> {
+    return fetchPublicCalendar(url);
   }
 
   private blockInsertValue(feed: IcalFeedRow, block: IcalBusyBlock) {
@@ -457,18 +452,6 @@ export class IcalService {
     };
   }
 
-  private async markSyncFailed(id: string, propertyId: string, message: string) {
-    await this.db
-      .update(icalFeeds)
-      .set({
-        lastSyncAt: new Date(),
-        lastSyncStatus: 'failed',
-        lastSyncError: message.slice(0, 2000),
-        updatedAt: new Date(),
-      })
-      .where(and(eq(icalFeeds.id, id), eq(icalFeeds.propertyId, propertyId)));
-  }
-
   private publicFeed(feed: IcalFeedRow) {
     const safe = { ...feed };
     delete (safe as { tokenHash?: string | null }).tokenHash;
@@ -482,7 +465,7 @@ export class IcalService {
       roomTypeId: feed.roomTypeId,
       direction: feed.direction,
       name: feed.name,
-      sourceUrl: feed.sourceUrl,
+      hasSourceUrl: Boolean(feed.sourceUrl),
       isActive: feed.isActive,
       lastSyncAt: feed.lastSyncAt,
       lastSyncStatus: feed.lastSyncStatus,

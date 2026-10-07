@@ -1,4 +1,4 @@
-import { pgTable, uuid, varchar, text, boolean, timestamp, date, pgEnum, index } from 'drizzle-orm/pg-core';
+import { pgTable, uuid, varchar, text, boolean, timestamp, date, pgEnum, index, integer } from 'drizzle-orm/pg-core';
 import { properties } from './property.js';
 import { roomTypes } from './room.js';
 
@@ -23,6 +23,8 @@ export const icalFeeds = pgTable('ical_feeds', {
   lastSyncAt: timestamp('last_sync_at', { withTimezone: true }),
   lastSyncStatus: varchar('last_sync_status', { length: 20 }),
   lastSyncError: text('last_sync_error'),
+  lastSuccessfulSyncAt: timestamp('last_successful_sync_at', { withTimezone: true }),
+  consecutiveSyncFailures: integer('consecutive_sync_failures').notNull().default(0),
 
   createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
   updatedAt: timestamp('updated_at', { withTimezone: true }).notNull().defaultNow(),

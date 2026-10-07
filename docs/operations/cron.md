@@ -119,3 +119,39 @@ Authorization: Bearer <token>
 Role: `admin`, `general_manager`, or `night_auditor`
 
 Channex OTA reviews can also arrive via `POST /channels/inbound/channex/reviews` (event `review`) without polling.
+
+
+## iCal calendar polling worker
+
+An optional standalone worker reuses `IcalService`; the HTTP API does not run its scheduler.
+After migrations, start `node apps/api/dist/ical-worker.js` in a separate container using
+`DATABASE_URL` and `ICAL_POLL_INTERVAL_MS` (default 300000, range 60000–3600000).
+It scans due active import feeds every 15 seconds, at most 25 per sweep, and retries
+failed feeds on the next configured cadence. Export feeds are served by the API and
+polled by the remote channel. No new public scheduler endpoint or staff password is required.
+
+All import callers share a PostgreSQL feed-row lock. An overlapping manual sync returns
+409; a scheduled attempt skips a locked or recently refreshed feed. Replacement takes
+the reservation engine's room-type inventory lock. Invalid/unsupported/oversized/failed
+responses preserve the previous busy blocks. Requests do not follow redirects, use
+validated public DNS addresses for the connection, and cap time/body/events. This worker
+adds no physical-unit mapping or calendar echo reconciliation.
+
+Feed reads expose `lastSyncAt` (latest attempt), `lastSuccessfulSyncAt`,
+`consecutiveSyncFailures`, `lastSyncStatus` and a sanitised `lastSyncError`. Migration
+0028 backfills last success only when the existing latest attempt was successful;
+previous historical successes cannot be inferred for failed feeds.
+
+Worker stdout is JSON: filter `ical_sync_failed`, `ical_sweep_failed` or
+`ical_sweep_completed`. Events include `syncRunId`, `feedId`, `propertyId` and durations;
+they omit source URLs, export tokens, event summaries and guest data.
+
+`/tmp/haip-ical-worker-health.json` contains aggregate status, feed/failure/stale counts,
+interval and heartbeat. `degraded` means a feed failed or its last success is older than
+max(3 intervals, 10 minutes). `unavailable` means the worker could not perform its database
+sweep. A container probe should fail for `unavailable` or a heartbeat older than two
+minutes; a failed feed should alert operations without restarting a healthy worker.
+
+Configure external retained logs/alerts separately. Docker health checks alone neither
+send notifications nor prove live OTA delivery. Measure provider delays and prove unit
+mapping with actual OTA fixtures before production use.

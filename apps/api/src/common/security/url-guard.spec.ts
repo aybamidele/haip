@@ -10,12 +10,13 @@ import {
 describe('isPrivateIp', () => {
   it.each([
     '127.0.0.1', '10.1.2.3', '172.16.0.1', '172.31.255.255', '192.168.1.1',
-    '169.254.169.254', '100.64.0.1', '0.0.0.0', '::1', 'fe80::1', 'fc00::1', '::ffff:10.0.0.1',
+    '169.254.169.254', '100.64.0.1', '0.0.0.0', '::1', 'fe80::1', 'fc00::1', '::ffff:10.0.0.1', '::ffff:7f00:1', '0:0:0:0:0:ffff:7f00:1',
+    '::ffff:a00:1', '::ffff:c0a8:101', 'febf::1', 'ff02::1', '::127.0.0.1',
   ])('flags %s as private', (ip) => {
     expect(isPrivateIp(ip)).toBe(true);
   });
 
-  it.each(['8.8.8.8', '1.1.1.1', '172.15.0.1', '172.32.0.1', '93.184.216.34'])(
+  it.each(['8.8.8.8', '1.1.1.1', '172.15.0.1', '172.32.0.1', '93.184.216.34', '2606:4700:4700::1111', '::ffff:808:808'])(
     'allows public %s',
     (ip) => {
       expect(isPrivateIp(ip)).toBe(false);
@@ -33,6 +34,8 @@ describe('isLiterallySafeHttpUrl', () => {
     expect(isLiterallySafeHttpUrl('http://127.0.0.1/x')).toBe(false);
     expect(isLiterallySafeHttpUrl('http://169.254.169.254/latest/meta-data/')).toBe(false);
     expect(isLiterallySafeHttpUrl('http://10.0.0.5/internal')).toBe(false);
+    expect(isLiterallySafeHttpUrl('http://[::ffff:127.0.0.1]/')).toBe(false);
+    expect(isLiterallySafeHttpUrl('https://name:secret@example.com/')).toBe(false);
   });
   it('accepts a public https URL', () => {
     expect(isLiterallySafeHttpUrl('https://hooks.example.com/haip')).toBe(true);

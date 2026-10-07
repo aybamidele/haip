@@ -32,13 +32,23 @@ export function isPrivateIp(ip: string): boolean {
     return false;
   }
   if (v === 6) {
-    const ip6 = ip.toLowerCase().replace(/^\[|\]$/g, '');
-    if (ip6 === '::1' || ip6 === '::') return true; // loopback / unspecified
-    if (ip6.startsWith('fe80') || ip6.startsWith('fc') || ip6.startsWith('fd')) return true; // link-local / ULA
-    // IPv4-mapped (::ffff:a.b.c.d) — re-check the embedded v4
-    const mapped = ip6.match(/::ffff:(\d+\.\d+\.\d+\.\d+)$/);
-    if (mapped) return isPrivateIp(mapped[1]!);
-    return false;
+    // URL canonicalisation changes dotted mapped addresses into hexadecimal.
+    const canonical = new URL(`http://[${ip}]/`).hostname.slice(1, -1);
+    const [left = '', right = ''] = canonical.split('::');
+    const head = left ? left.split(':') : [];
+    const tail = right ? right.split(':') : [];
+    const parts = canonical.includes('::')
+      ? [...head, ...Array<string>(8 - head.length - tail.length).fill('0'), ...tail]
+      : head;
+    const words = parts.map((word) => Number.parseInt(word, 16));
+    if (words.slice(0, 5).every((word) => word === 0) && words[5] === 0xffff) {
+      const high = words[6]!;
+      const low = words[7]!;
+      return isPrivateIp(`${high >> 8}.${high & 255}.${low >> 8}.${low & 255}`);
+    }
+    // Accept global unicast only. This also excludes compatible/translated
+    // literals, multicast, link-local, ULA, unspecified and loopback addresses.
+    return (words[0]! & 0xe000) !== 0x2000;
   }
   return true; // not an IP literal handled here
 }
@@ -54,12 +64,13 @@ function isBlockedHostname(hostname: string): boolean {
 
 /**
  * Validate a URL is a safe public http(s) target. Resolves DNS and re-checks the
- * resolved addresses to defeat DNS-rebinding. Throws UnsafeUrlError otherwise.
+ * resolved addresses. The caller must bind its connection to these addresses
+ * to prevent DNS-rebinding. Throws UnsafeUrlError otherwise.
  */
-export async function assertSafeOutboundUrl(
+export async function resolveSafeOutboundUrl(
   raw: string,
   opts: { requireHttps?: boolean } = {},
-): Promise<void> {
+): Promise<{ url: URL; addresses: { address: string; family: number }[] }> {
   let url: URL;
   try {
     url = new URL(raw);
@@ -70,13 +81,14 @@ export async function assertSafeOutboundUrl(
   if (opts.requireHttps ? scheme !== 'https' : scheme !== 'http' && scheme !== 'https') {
     throw new UnsafeUrlError(`Disallowed URL scheme: ${scheme}`);
   }
+  if (url.username || url.password || url.hash) throw new UnsafeUrlError('URL credentials and fragments are not allowed');
   const hostname = url.hostname.replace(/^\[|\]$/g, '');
   if (isBlockedHostname(hostname)) {
     throw new UnsafeUrlError('URL host is not allowed (private/loopback)');
   }
   // If the host is a DNS name, resolve and re-check every address.
   if (isIP(hostname) === 0) {
-    let addrs: { address: string }[];
+    let addrs: { address: string; family: number }[];
     try {
       addrs = await lookup(hostname, { all: true });
     } catch {
@@ -85,7 +97,14 @@ export async function assertSafeOutboundUrl(
     if (addrs.length === 0 || addrs.some((a) => isPrivateIp(a.address))) {
       throw new UnsafeUrlError('URL host resolves to a private address');
     }
+    return { url, addresses: addrs };
   }
+  return { url, addresses: [{ address: hostname, family: isIP(hostname) }] };
+}
+
+/** Validation alone does not pin a later fetch's DNS. Use returned addresses when connecting. */
+export async function assertSafeOutboundUrl(raw: string, opts: { requireHttps?: boolean } = {}): Promise<void> {
+  await resolveSafeOutboundUrl(raw, opts);
 }
 
 /**
@@ -116,5 +135,6 @@ export function isLiterallySafeHttpUrl(raw: string, opts: { requireHttps?: boole
   }
   const scheme = url.protocol.replace(/:$/, '');
   if (opts.requireHttps ? scheme !== 'https' : scheme !== 'http' && scheme !== 'https') return false;
+  if (url.username || url.password || url.hash) return false;
   return !isBlockedHostname(url.hostname.replace(/^\[|\]$/g, ''));
 }
