@@ -13,6 +13,13 @@ import { DepositSettlementService } from '../accounting/deposit-settlement.servi
 import { RatePlanService } from '../rate-plan/rate-plan.service';
 import { DRIZZLE } from '../../database/database.module';
 
+// Physical allocation/locking is covered by the opt-in PostgreSQL integration suite.
+vi.mock('./room-allocation', async (original) => ({
+  ...await original<typeof import('./room-allocation')>(),
+  lockAllocationSnapshot: vi.fn().mockResolvedValue(undefined),
+  assertRoomStayAvailable: vi.fn().mockResolvedValue(undefined),
+}));
+
 describe('ReservationService.moveRoom', () => {
   let svc: ReservationService;
   let db: any;
@@ -85,6 +92,7 @@ describe('ReservationService.moveRoom', () => {
       ],
     }).compile();
 
+    db.transaction = vi.fn(async (callback: (tx: unknown) => Promise<unknown>) => callback(db));
     svc = module.get(ReservationService);
     vi.spyOn(svc as any, 'findByIdRaw').mockResolvedValue({ ...reservation });
   });

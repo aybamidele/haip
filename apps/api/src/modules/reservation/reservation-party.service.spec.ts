@@ -3,8 +3,16 @@ import { Test, type TestingModule } from '@nestjs/testing';
 import { BadRequestException, ConflictException, NotFoundException } from '@nestjs/common';
 import { ReservationPartyService } from './reservation-party.service';
 import { DRIZZLE } from '../../database/database.module';
+
+// Physical allocation/locking is covered by the opt-in PostgreSQL integration suite.
+vi.mock('./room-allocation', async (original) => ({
+  ...await original<typeof import('./room-allocation')>(),
+  lockAllocationSnapshot: vi.fn().mockResolvedValue(undefined),
+  assertRoomStayAvailable: vi.fn().mockResolvedValue(undefined),
+}));
 import { WebhookService } from '../webhook/webhook.service';
 import { RoomStatusService } from '../room/room-status.service';
+import { AvailabilityService, stayDates } from './availability.service';
 import { RatePlanService } from '../rate-plan/rate-plan.service';
 
 const PROPERTY = 'prop-001';
@@ -56,6 +64,7 @@ describe('ReservationPartyService', () => {
     const module: TestingModule = await Test.createTestingModule({
       providers: [
         ReservationPartyService,
+        { provide: AvailabilityService, useValue: { searchAvailability: vi.fn(async (_propertyId: string, arrival: string, departure: string, roomTypeId: string) => stayDates(arrival, departure).map(date => ({ date, roomTypeId, available: 10 }))) } },
         { provide: DRIZZLE, useValue: db },
         { provide: WebhookService, useValue: webhook },
         { provide: RoomStatusService, useValue: roomStatus },

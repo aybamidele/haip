@@ -3,6 +3,9 @@ import { BadRequestException } from '@nestjs/common';
 import { Test } from '@nestjs/testing';
 import { ReservationService } from './reservation.service';
 import { DRIZZLE } from '../../database/database.module';
+
+// Allocation locking has independent PostgreSQL coverage; these tests exercise rates and date coverage.
+vi.mock('./room-allocation', async (original) => ({ ...await original<typeof import('./room-allocation')>(), lockAllocationSnapshot: vi.fn().mockResolvedValue(undefined) }));
 import { AvailabilityService } from './availability.service';
 import { FolioService } from '../folio/folio.service';
 import { RoomStatusService } from '../room/room-status.service';

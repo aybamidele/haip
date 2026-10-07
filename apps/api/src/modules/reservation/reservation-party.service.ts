@@ -21,6 +21,8 @@ import { RatePlanService } from '../rate-plan/rate-plan.service';
 import { AddReservationGuestDto } from './dto/add-reservation-guest.dto';
 import { SplitReservationDto } from './dto/split-reservation.dto';
 import { MoveReservationGuestDto } from './dto/move-reservation-guest.dto';
+import { AvailabilityService, assertFullStayAvailability } from './availability.service';
+import { assertRoomStayAvailable, lockAllocationSnapshot } from './room-allocation';
 
 type OccupantRow = {
   id: string;
@@ -48,6 +50,7 @@ export class ReservationPartyService {
     private readonly webhookService: WebhookService,
     private readonly roomStatusService: RoomStatusService,
     private readonly ratePlanService: RatePlanService,
+    private readonly availabilityService: AvailabilityService,
   ) {}
 
   async listGuests(reservationId: string, propertyId: string): Promise<OccupantRow[]> {
@@ -242,6 +245,15 @@ export class ReservationPartyService {
     const inHouse = ['checked_in', 'stayover', 'due_out'].includes(source.status);
 
     const result = await this.db.transaction(async (tx: any) => {
+      await lockAllocationSnapshot(tx, source, dto.roomTypeId);
+      const availability = await this.availabilityService.searchAvailability(
+        propertyId, source.arrivalDate, source.departureDate, dto.roomTypeId, tx);
+      assertFullStayAvailability(availability, dto.roomTypeId, source.arrivalDate, source.departureDate);
+      if (dto.roomId) {
+        // A split creates another reservation: the source must still count as an occupant.
+        await assertRoomStayAvailable(tx, { propertyId, roomTypeId: dto.roomTypeId, roomId: dto.roomId,
+          arrivalDate: source.arrivalDate, departureDate: source.departureDate });
+      }
       let newStatus: string = source.status === 'pending' ? 'pending' : 'confirmed';
       if (dto.roomId) {
         newStatus = inHouse ? 'checked_in' : 'assigned';

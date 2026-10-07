@@ -212,6 +212,7 @@ export class ReservationController {
   })
   @ApiQuery({ name: 'propertyId', required: true })
   @ApiResponse({ status: 200, description: 'Reservation modified' })
+  @ApiResponse({ status: 409, description: 'Assigned room overlaps a stay/calendar block, or reservation changed' })
   @ApiResponse({ status: 404, description: 'Reservation not found' })
   async modifyReservation(
     @Param('id', ParseUUIDPipe) id: string,
@@ -241,6 +242,7 @@ export class ReservationController {
   @ApiOperation({ summary: 'Assign specific room to reservation' })
   @ApiQuery({ name: 'propertyId', required: true })
   @ApiResponse({ status: 200, description: 'Room assigned' })
+  @ApiResponse({ status: 409, description: 'Selected room overlaps a stay/calendar block, or reservation changed' })
   assignRoom(
     @Param('id', ParseUUIDPipe) id: string,
     @Query('propertyId', ParseUUIDPipe) propertyId: string,
@@ -254,6 +256,7 @@ export class ReservationController {
   @ApiOperation({ summary: 'Move assigned or in-house reservation to another room' })
   @ApiQuery({ name: 'propertyId', required: true })
   @ApiResponse({ status: 200, description: 'Room moved' })
+  @ApiResponse({ status: 409, description: 'Selected room overlaps a stay/calendar block, or reservation changed' })
   moveRoom(
     @Param('id', ParseUUIDPipe) id: string,
     @Query('propertyId', ParseUUIDPipe) propertyId: string,
@@ -325,6 +328,8 @@ export class ReservationController {
   })
   @ApiQuery({ name: 'propertyId', required: true })
   @ApiResponse({ status: 201, description: 'Split completed' })
+  @ApiResponse({ status: 400, description: 'No room-type availability for the additional reservation' })
+  @ApiResponse({ status: 409, description: 'Selected room overlaps a stay/calendar block, or source changed' })
   splitReservation(
     @Param('id', ParseUUIDPipe) id: string,
     @Query('propertyId', ParseUUIDPipe) propertyId: string,
@@ -396,6 +401,7 @@ export class ReservationController {
   @ApiOperation({ summary: 'Check in reservation with optional ID capture, deposit auth, room override' })
   @ApiQuery({ name: 'propertyId', required: true })
   @ApiResponse({ status: 200, description: 'Guest checked in' })
+  @ApiResponse({ status: 409, description: 'Assigned/override room overlaps a stay/calendar block, or reservation changed' })
   checkIn(
     @Param('id', ParseUUIDPipe) id: string,
     @Query('propertyId', ParseUUIDPipe) propertyId: string,

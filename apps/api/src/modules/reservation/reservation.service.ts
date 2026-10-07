@@ -7,6 +7,7 @@ import {
   forwardRef,
 } from '@nestjs/common';
 import { eq, and, sql, gte, lte, inArray, isNull } from 'drizzle-orm';
+import type { PostgresJsDatabase } from 'drizzle-orm/postgres-js';
 import Decimal from 'decimal.js';
 import { reservations, reservationGuests, bookings, guests, rooms, roomTypes, ratePlans, properties, payments } from '@telivityhaip/database';
 import { DRIZZLE } from '../../database/database.module';
@@ -39,6 +40,7 @@ import { ListUnassignedDto } from './dto/list-unassigned.dto';
 import { createCipheriv, randomBytes } from 'crypto';
 import { generateConfirmationNumber } from '../../common/crypto/confirmation-number';
 import type { AcceptedPricingSnapshot } from '@telivityhaip/database';
+import { assertRoomStayAvailable, lockAllocationSnapshot, lockRoomInventory } from './room-allocation';
 
 type ReservationRow = typeof reservations.$inferSelect;
 
@@ -236,18 +238,7 @@ export class ReservationService {
   }
 
   async lockInventory(propertyId: string, roomTypeId: string, tx: any): Promise<{ id: string; isActive: boolean; maxOccupancy: number }> {
-    const lockedRoomTypes = await tx
-      .select({ id: roomTypes.id, isActive: roomTypes.isActive, maxOccupancy: roomTypes.maxOccupancy })
-      .from(roomTypes)
-      .where(and(
-        eq(roomTypes.id, roomTypeId),
-        eq(roomTypes.propertyId, propertyId),
-      ))
-      .for('update');
-    if (!lockedRoomTypes.some((row: { id: string }) => row.id === roomTypeId)) {
-      throw new NotFoundException(`room type ${roomTypeId} not found in this property`);
-    }
-    return lockedRoomTypes[0];
+    return lockRoomInventory(tx, propertyId, roomTypeId);
   }
 
   async confirm(id: string, propertyId: string) {
@@ -297,13 +288,12 @@ export class ReservationService {
 
     // Bug 2: atomic claim — only one assign can win the race on the same
     // reservation, and only from states the state machine allows.
-    const updated = await this.claimTransition(
-      id,
-      propertyId,
-      ['confirmed'],
-      { roomId: dto.roomId, status: 'assigned', updatedAt: new Date() },
-      'assigned',
-    );
+    const updated = await this.db.transaction(async (tx: PostgresJsDatabase) => {
+      await lockAllocationSnapshot(tx, reservation);
+      await assertRoomStayAvailable(tx, { ...reservation, roomId: dto.roomId, excludeReservationId: id });
+      return this.claimTransition(id, propertyId, ['confirmed'],
+        { roomId: dto.roomId, status: 'assigned', updatedAt: new Date() }, 'assigned', tx);
+    });
     return updated;
   }
 
@@ -350,11 +340,13 @@ export class ReservationService {
     const previousRoomId = reservation.roomId as string | null;
     const inHouse = ['checked_in', 'stayover', 'due_out'].includes(reservation.status);
 
-    const [updated] = await this.db
-      .update(reservations)
-      .set({ roomId: dto.roomId, updatedAt: new Date() })
-      .where(and(eq(reservations.id, id), eq(reservations.propertyId, propertyId)))
-      .returning();
+    const updated = await this.db.transaction(async (tx: PostgresJsDatabase) => {
+      await lockAllocationSnapshot(tx, reservation);
+      await assertRoomStayAvailable(tx, { ...reservation, roomId: dto.roomId, excludeReservationId: id });
+      const [row] = await tx.update(reservations).set({ roomId: dto.roomId, updatedAt: new Date() })
+        .where(and(eq(reservations.id, id), eq(reservations.propertyId, propertyId))).returning();
+      return row!;
+    });
 
     if (inHouse) {
       if (previousRoomId) {
@@ -657,13 +649,11 @@ export class ReservationService {
     // Bug 2: atomic claim — only assigned reservations may check in, and
     // only one concurrent check-in can win. Side effects (folio, payment,
     // room transition, webhook) run ONLY if the claim succeeded.
-    const updated = await this.claimTransition(
-      id,
-      propertyId,
-      ['assigned'],
-      updateData,
-      'checked_in',
-    );
+    const updated = await this.db.transaction(async (tx: PostgresJsDatabase) => {
+      await lockAllocationSnapshot(tx, reservation);
+      await assertRoomStayAvailable(tx, { ...reservation, roomId, excludeReservationId: id });
+      return this.claimTransition(id, propertyId, ['assigned'], updateData, 'checked_in', tx);
+    });
 
     // Auto-create guest folio on check-in
     const folio = await this.folioService.createAutoFolio(updated);
@@ -1159,7 +1149,11 @@ export class ReservationService {
         const newDeparture = (dto.departureDate ?? reservation.departureDate) as string;
         const newRoomTypeId = (dto.roomTypeId ?? reservation.roomTypeId) as string;
 
-        await this.lockInventory(propertyId, newRoomTypeId, tx);
+        await lockAllocationSnapshot(tx, reservation, newRoomTypeId);
+        if (reservation.roomId) {
+          await assertRoomStayAvailable(tx, { propertyId, roomTypeId: newRoomTypeId,
+            roomId: reservation.roomId, arrivalDate: newArrival, departureDate: newDeparture, excludeReservationId: id });
+        }
 
         const availability = await this.availabilityService.searchAvailability(
           reservation.propertyId,
@@ -1268,6 +1262,11 @@ export class ReservationService {
       || acceptedPricingSnapshot.nights.some((night, index) => night.date !== dates[index])
     ) {
       throw new ConflictException('Amended pricing does not cover the complete stay window');
+    }
+
+    if (lockedReservation.roomId) {
+      await assertRoomStayAvailable(tx, { ...lockedReservation, arrivalDate: dto.arrivalDate,
+        departureDate: dto.departureDate, excludeReservationId: lockedReservation.id, roomId: lockedReservation.roomId });
     }
 
     const [updated] = await tx
@@ -1431,12 +1430,13 @@ export class ReservationService {
     allowedFromStatuses: ReservationStatus[],
     updateData: Record<string, unknown>,
     targetStatus: ReservationStatus,
-  ) {
+    db: PostgresJsDatabase = this.db,
+  ): Promise<ReservationRow> {
     const statusCondition = allowedFromStatuses.length === 1
       ? eq(reservations.status, allowedFromStatuses[0]! as any)
       : inArray(reservations.status, allowedFromStatuses as any);
 
-    const claimed = await this.db
+    const claimed = await db
       .update(reservations)
       .set(updateData)
       .where(
@@ -1449,11 +1449,11 @@ export class ReservationService {
       .returning();
 
     if (claimed && claimed.length > 0) {
-      return claimed[0];
+      return claimed[0]!;
     }
 
     // Claim failed — either gone, wrong tenant, or wrong state. Distinguish.
-    const [current] = await this.db
+    const [current] = await db
       .select()
       .from(reservations)
       .where(
