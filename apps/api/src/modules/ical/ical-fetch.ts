@@ -1,4 +1,5 @@
 import { request as httpRequest, type RequestOptions } from 'node:http';
+import type { TcpSocketConnectOpts } from 'node:net';
 import { request as httpsRequest } from 'node:https';
 import { resolveSafeOutboundUrl } from '../../common/security/url-guard';
 
@@ -22,14 +23,15 @@ export async function fetchPublicCalendar(
     if (controller.signal.aborted) throw new CalendarFetchError('Calendar request timed out');
     const address = target.addresses[0]!;
     const lookup: RequestOptions['lookup'] = (_hostname, lookupOptions, callback) => {
-      if (lookupOptions.all) callback(null, [address]);
+      if (lookupOptions.all) callback(null, target.addresses);
       else callback(null, address.address, address.family);
     };
     return await new Promise<string>((resolve, reject) => {
-      const request = (target.url.protocol === 'https:' ? httpsRequest : httpRequest)(target.url, {
-        agent: false, lookup, signal: controller.signal,
+      const connectionOptions: RequestOptions & Pick<TcpSocketConnectOpts, 'autoSelectFamily'> = {
+        agent: false, lookup, autoSelectFamily: true, signal: controller.signal,
         headers: { Accept: 'text/calendar, text/plain;q=0.9', 'Accept-Encoding': 'identity' },
-      }, (response) => {
+      };
+      const request = (target.url.protocol === 'https:' ? httpsRequest : httpRequest)(target.url, connectionOptions, (response) => {
         const fail = (message: string) => {
           reject(new CalendarFetchError(message));
           response.destroy();

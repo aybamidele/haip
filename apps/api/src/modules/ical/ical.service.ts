@@ -127,7 +127,16 @@ export class IcalService {
     const patch: Record<string, unknown> = { updatedAt: new Date() };
     if (dto.name !== undefined) patch['name'] = dto.name;
     if (dto.isActive !== undefined) patch['isActive'] = dto.isActive;
-    if (dto.sourceUrl !== undefined) patch['sourceUrl'] = dto.sourceUrl;
+    if (dto.sourceUrl !== undefined) {
+      patch['sourceUrl'] = dto.sourceUrl;
+      if (dto.sourceUrl !== existing.sourceUrl) {
+        // Changed sources are due immediately; retain last-good blocks until validation succeeds.
+        patch['lastSyncAt'] = null;
+        patch['lastSyncStatus'] = null;
+        patch['lastSyncError'] = null;
+        patch['consecutiveSyncFailures'] = 0;
+      }
+    }
 
     const [updated] = await this.db
       .update(icalFeeds)

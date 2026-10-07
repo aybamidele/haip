@@ -10,7 +10,7 @@ vi.mock('node:dns/promises', () => ({ lookup: vi.fn() }));
 vi.mock('node:http', () => ({ request: vi.fn() }));
 vi.mock('node:https', () => ({ request: vi.fn() }));
 
-let connected: RequestOptions;
+let connected: RequestOptions & { autoSelectFamily?: boolean };
 let reply: IncomingMessage;
 let onReply: (response: IncomingMessage) => void;
 let outgoing: EventEmitter;
@@ -38,6 +38,7 @@ describe('public calendar download', () => {
     await started();
     expect(lookup).toHaveBeenCalledOnce();
     expect(connected.agent).toBe(false);
+    expect(connected.autoSelectFamily).toBe(true);
     expect(vi.mocked(httpsRequest).mock.calls[0]?.[0]).toBeInstanceOf(URL);
     expect((vi.mocked(httpsRequest).mock.calls[0]?.[0] as URL).hostname).toBe('calendar.example.com');
     const resolved = vi.fn();

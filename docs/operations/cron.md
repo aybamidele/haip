@@ -127,7 +127,8 @@ An optional standalone worker reuses `IcalService`; the HTTP API does not run it
 After migrations, start `node apps/api/dist/ical-worker.js` in a separate container using
 `DATABASE_URL` and `ICAL_POLL_INTERVAL_MS` (default 300000, range 60000–3600000).
 It scans due active import feeds every 15 seconds, at most 25 per sweep, and retries
-failed feeds on the next configured cadence. Export feeds are served by the API and
+failed feeds on the next configured cadence. Changing a source URL makes the feed
+due immediately while retaining last-good blocks. Export feeds are served by the API and
 polled by the remote channel. No new public scheduler endpoint or staff password is required.
 
 All import callers share a PostgreSQL feed-row lock. An overlapping manual sync returns

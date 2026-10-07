@@ -75,7 +75,11 @@ describe.skipIf(!databaseUrl)('iCal reliability on PostgreSQL', () => {
     await expect(service.syncImportFeed(feedId, propertyId)).rejects.toThrow();
     expect((await feed()).consecutiveSyncFailures).toBe(2);
     fetch.mockResolvedValue(calendar('STATUS:CANCELLED'));
-    await service.syncImportFeed(feedId, propertyId);
+    await service.update(feedId, propertyId, { sourceUrl: 'https://calendar.example.test/cancelled.ics' });
+    expect((await feed()).lastSyncAt).toBeNull();
+    expect(await blocks()).toEqual(snapshot);
+    expect((await feed()).lastSuccessfulSyncAt).toEqual(good);
+    await new IcalPollingService(db, config, service).run();
     expect(await blocks()).toEqual([]); expect((await feed()).consecutiveSyncFailures).toBe(0);
     expect((await feed()).lastSyncError).toBeNull();
   });
