@@ -9,7 +9,7 @@ import {
 } from 'react';
 import { keycloak, AUTH_ENABLED } from '../lib/keycloak';
 import { api } from '../lib/api';
-import { reconnectSocket } from '../lib/socket';
+import { reconnectSocket, disconnectSocket } from '../lib/socket';
 import { useToast } from '../components/ui/Toast';
 import { useTranslation } from 'react-i18next';
 
@@ -123,6 +123,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
                 reconnectSocket();
               }
             }).catch((err) => {
+              disconnectSocket();
               console.error('Token refresh failed:', err);
               keycloak.login();
             });
@@ -183,6 +184,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
 
   const logout = useCallback(() => {
     if (AUTH_ENABLED) {
+      disconnectSocket();
       keycloak.logout({ redirectUri: window.location.origin });
     }
   }, []);
