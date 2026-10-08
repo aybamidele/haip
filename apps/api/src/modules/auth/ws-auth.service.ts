@@ -2,6 +2,7 @@ import { Injectable, Logger } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
 import * as jwt from 'jsonwebtoken';
 import jwksClient, { JwksClient, SigningKey } from 'jwks-rsa';
+import { PermissionsService } from './permissions.service';
 import type { AuthUser } from './current-user.decorator';
 
 /**
@@ -18,7 +19,7 @@ export class WsAuthService {
   private readonly allowedAzp: string[];
   private readonly jwks: JwksClient;
 
-  constructor(configService: ConfigService) {
+  constructor(configService: ConfigService, private readonly permissions: PermissionsService) {
     const keycloakUrl = configService.get<string>('KEYCLOAK_URL', 'http://localhost:8080');
     const realm = configService.get<string>('KEYCLOAK_REALM', 'haip');
     this.issuer = `${keycloakUrl}/realms/${realm}`;
@@ -38,6 +39,8 @@ export class WsAuthService {
       jwksRequestsPerMinute: 5,
     });
   }
+
+  assertActiveIdentity(user: AuthUser): Promise<void> { return this.permissions.assertActiveIdentity(user); }
 
   /**
    * Verify a bearer token and return the extracted AuthUser.
@@ -76,6 +79,7 @@ export class WsAuthService {
       throw new Error('Invalid token audience (azp mismatch)');
     }
 
+    await this.assertActiveIdentity(payload);
     return {
       sub: payload.sub,
       email: payload.email ?? '',

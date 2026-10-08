@@ -53,7 +53,7 @@ export class StaffNotificationService {
       input.propertyId,
     );
 
-    this.eventsGateway.broadcastStaffNotification(input.propertyId, {
+    await this.eventsGateway.broadcastStaffNotification(input.propertyId, {
       id: row.id,
       type: row.type,
       title: row.title,

@@ -39,15 +39,15 @@ import { WsAuthService } from './ws-auth.service';
     // actually validated, so no runtime cost when auth is off.
     {
       provide: JwtStrategy,
-      useFactory: (configService: ConfigService) => {
+      useFactory: (configService: ConfigService, permissions: PermissionsService) => {
         const authEnabled = configService.get<string>('AUTH_ENABLED', 'true');
         if (authEnabled === 'false') {
           // Return a no-op strategy when auth is explicitly disabled
           return {} as JwtStrategy;
         }
-        return new JwtStrategy(configService);
+        return new JwtStrategy(configService, permissions);
       },
-      inject: [ConfigService],
+      inject: [ConfigService, PermissionsService],
     },
     // Global guards — applied to ALL endpoints, in order:
     // 1. JwtAuthGuard populates req.user, 2. RolesGuard checks @Roles(),
