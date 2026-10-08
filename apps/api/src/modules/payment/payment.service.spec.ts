@@ -59,12 +59,14 @@ function createMockDb(returnData: any[] = [mockPayment]) {
     }),
   });
 
-  return {
+  const db = {
+    transaction: vi.fn(async (operation: (tx: unknown) => Promise<unknown>) => operation(db)),
     select: vi.fn().mockImplementation(selectChain),
     insert: vi.fn().mockReturnValue(mutateChain()),
     update: vi.fn().mockReturnValue(mutateChain()),
     delete: vi.fn().mockReturnValue(mutateChain()),
   };
+  return db;
 }
 
 const mockFolioService = {
