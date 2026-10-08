@@ -8,7 +8,7 @@ import {
 import { ConfigService } from '@nestjs/config';
 import { eq, and, isNull, sql } from 'drizzle-orm';
 import { Decimal } from 'decimal.js';
-import { payments } from '@telivityhaip/database';
+import { payments, reservations } from '@telivityhaip/database';
 import { DRIZZLE } from '../../database/database.module';
 import { WebhookService } from '../webhook/webhook.service';
 import { FolioService } from '../folio/folio.service';
@@ -99,14 +99,17 @@ export class PaymentService {
       throw new BadRequestException('processedAt cannot be in the future');
     }
 
-    const [payment] = await this.db
-      .insert(payments)
-      .values({
-        ...dto,
-        status: 'captured',
-        processedAt,
-      })
-      .returning();
+    const payment = await this.db.transaction(async (tx: import('drizzle-orm/postgres-js').PostgresJsDatabase) => {
+      if (folio.reservationId) {
+        // Same mutex as hold expiry. A receipt arriving after cancellation is
+        // still real money to record, but cannot revive the reservation.
+        await tx.select({ id: reservations.id }).from(reservations)
+          .where(and(eq(reservations.id, folio.reservationId), eq(reservations.propertyId, dto.propertyId)))
+          .for('update');
+      }
+      const [received] = await tx.insert(payments).values({ ...dto, method: dto.method as typeof payments.$inferInsert.method, status: 'captured', processedAt }).returning();
+      return received;
+    });
 
     await this.folioService.recalculateBalance(dto.folioId, dto.propertyId);
 
