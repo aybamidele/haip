@@ -3,6 +3,7 @@ import { ConfigService } from '@nestjs/config';
 import { PassportStrategy } from '@nestjs/passport';
 import { ExtractJwt, Strategy } from 'passport-jwt';
 import { passportJwtSecret } from 'jwks-rsa';
+import { PermissionsService } from './permissions.service';
 import type { AuthUser } from './current-user.decorator';
 
 /**
@@ -21,7 +22,7 @@ import type { AuthUser } from './current-user.decorator';
 export class JwtStrategy extends PassportStrategy(Strategy, 'jwt') {
   private readonly allowedAzp: string[];
 
-  constructor(configService: ConfigService) {
+  constructor(configService: ConfigService, private readonly permissions: PermissionsService) {
     const keycloakUrl = configService.get<string>('KEYCLOAK_URL', 'http://localhost:8080');
     const realm = configService.get<string>('KEYCLOAK_REALM', 'haip');
     const issuer = `${keycloakUrl}/realms/${realm}`;
@@ -61,10 +62,11 @@ export class JwtStrategy extends PassportStrategy(Strategy, 'jwt') {
    * access tokens minted for a different realm client cannot pass through.
    * Returns the user object attached to req.user.
    */
-  validate(payload: any): AuthUser {
+  async validate(payload: any): Promise<AuthUser> {
     if (payload.azp && !this.allowedAzp.includes(payload.azp)) {
       throw new UnauthorizedException('Invalid token audience (azp mismatch)');
     }
+    await this.permissions.assertActiveIdentity(payload);
     return {
       sub: payload.sub,
       email: payload.email ?? '',

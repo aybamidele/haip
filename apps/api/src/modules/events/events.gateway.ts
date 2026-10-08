@@ -78,7 +78,7 @@ export class EventsGateway implements OnGatewayConnection, OnGatewayDisconnect {
   }
 
   @SubscribeMessage('joinProperty')
-  handleJoinProperty(
+  async handleJoinProperty(
     @ConnectedSocket() client: Socket,
     @MessageBody() data: { propertyId: string },
   ) {
@@ -88,6 +88,12 @@ export class EventsGateway implements OnGatewayConnection, OnGatewayDisconnect {
       const user = client.data.user as AuthUser | undefined;
       if (!user) {
         client.emit('error', { message: 'Not authenticated' });
+        return;
+      }
+      try {
+        await this.wsAuth.assertActiveIdentity(user);
+      } catch {
+        client.disconnect(true);
         return;
       }
       if (!this.userCanAccessProperty(user, data.propertyId)) {
@@ -118,21 +124,45 @@ export class EventsGateway implements OnGatewayConnection, OnGatewayDisconnect {
     this.logger.debug(`Client ${client.id} left room ${room}`);
   }
 
-  broadcastToProperty(propertyId: string, event: string, data: unknown) {
-    const room = `property:${propertyId}`;
-    this.server.to(room).emit('pmsEvent', {
-      event,
-      data,
-      timestamp: new Date().toISOString(),
-    });
+  async broadcastToProperty(propertyId: string, event: string, data: unknown) {
+    await this.broadcastChecked(propertyId, 'pmsEvent', { event, data, timestamp: new Date().toISOString() });
   }
 
-  broadcastStaffNotification(propertyId: string, notification: Record<string, unknown>) {
+  async broadcastStaffNotification(propertyId: string, notification: Record<string, unknown>) {
+    await this.broadcastChecked(propertyId, 'staffNotification', { ...notification, timestamp: new Date().toISOString() });
+  }
+
+  private async broadcastChecked(propertyId: string, event: string, payload: unknown): Promise<void> {
     const room = `property:${propertyId}`;
-    this.server.to(room).emit('staffNotification', {
-      ...notification,
-      timestamp: new Date().toISOString(),
-    });
+    if (!this.authEnabled) {
+      this.server.to(room).emit(event, payload);
+      return;
+    }
+    try {
+      const clients = await this.server.in(room).fetchSockets();
+      const statusChecks = new Map<string, Promise<void>>();
+      for (const client of clients) {
+        const user = client.data.user as AuthUser | undefined;
+        if (!user || !this.userCanAccessProperty(user, propertyId)) {
+          client.disconnect(true);
+          continue;
+        }
+        try {
+          const identity = JSON.stringify([user.sub, user.email]);
+          let check = statusChecks.get(identity);
+          if (!check) {
+            check = this.wsAuth.assertActiveIdentity(user);
+            statusChecks.set(identity, check);
+          }
+          await check;
+          client.emit(event, payload);
+        } catch {
+          client.disconnect(true);
+        }
+      }
+    } catch {
+      this.logger.error({ event: 'pms_broadcast_failed' });
+    }
   }
 
   private extractToken(client: Socket): string | null {

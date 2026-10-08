@@ -158,8 +158,14 @@ export function useRealtimeInvalidation() {
       }
     }
 
+    const recoverMissedEvents = () => {
+      // Re-read mounted views: event delivery while disconnected is not replayed.
+      void queryClient.invalidateQueries({ refetchType: 'active' });
+    };
+    socket.on('connect', recoverMissedEvents);
     socket.on('pmsEvent', handleEvent);
     return () => {
+      socket.off('connect', recoverMissedEvents);
       socket.off('pmsEvent', handleEvent);
     };
   }, [activePropertyId, queryClient]);

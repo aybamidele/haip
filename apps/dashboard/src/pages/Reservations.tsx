@@ -21,6 +21,7 @@ import { useToast } from '../components/ui/Toast';
 import StatusBadge from '../components/ui/StatusBadge';
 import Modal from '../components/ui/Modal';
 import FindGuest from '../components/guests/FindGuest';
+import StayDateEditor from '../components/reservations/StayDateEditor';
 import ReservationPartyPanel from '../components/reservations/ReservationPartyPanel';
 import type { Guest } from '../types/guest';
 
@@ -644,6 +645,9 @@ function ReservationList() {
                   <p className="text-sm bg-telivity-light-grey rounded-lg p-3">{detailRes.notes}</p>
                 </div>
               )}
+              <StayDateEditor key={`${propertyId}:${detailRes.id}`} reservationId={detailRes.id} propertyId={propertyId!}
+                arrivalDate={detailRes.arrivalDate} departureDate={detailRes.departureDate} status={detailRes.status} source={detailRes.source}
+                onSaved={dates => setDetailRes(current => current?.id === detailRes.id ? { ...current, ...dates } : current)} />
               <ReservationPartyPanel
                 reservationId={detailRes.id}
                 propertyId={propertyId!}
