@@ -2,6 +2,7 @@ import { io, type Socket } from 'socket.io-client';
 import { AUTH_ENABLED, keycloak } from './keycloak';
 
 let socket: Socket | null = null;
+let activePropertyId: string | null = null;
 
 function socketAuthPayload(): Record<string, string> {
   if (AUTH_ENABLED && keycloak.token) {
@@ -15,7 +16,11 @@ export function getSocket(): Socket {
     socket = io('/', {
       transports: ['websocket', 'polling'],
       autoConnect: false,
-      auth: socketAuthPayload(),
+      auth: (callback) => callback(socketAuthPayload()),
+      reconnectionAttempts: 5,
+    });
+    socket.on('connect', () => {
+      if (activePropertyId) socket?.emit('joinProperty', { propertyId: activePropertyId });
     });
   }
   return socket;
@@ -24,20 +29,27 @@ export function getSocket(): Socket {
 /** Reconnect with a fresh JWT after Keycloak token refresh. */
 export function reconnectSocket() {
   const s = getSocket();
-  s.auth = socketAuthPayload();
-  if (s.connected) {
-    s.disconnect();
-    s.connect();
-  }
+  if (AUTH_ENABLED && (!keycloak.authenticated || !keycloak.token)) return;
+  if (s.connected) s.disconnect();
+  s.connect();
 }
 
 export function joinPropertyRoom(propertyId: string) {
   const s = getSocket();
-  if (!s.connected) s.connect();
-  s.emit('joinProperty', { propertyId });
+  activePropertyId = propertyId;
+  if (AUTH_ENABLED && (!keycloak.authenticated || !keycloak.token)) return;
+  if (s.connected) s.emit('joinProperty', { propertyId });
+  else s.connect();
 }
 
 export function leavePropertyRoom(propertyId: string) {
   const s = getSocket();
-  s.emit('leaveProperty', { propertyId });
+  if (activePropertyId === propertyId) activePropertyId = null;
+  if (s.connected) s.emit('leaveProperty', { propertyId });
+}
+
+/** Explicit disconnect stops Socket.IO retries and clears the property subscription. */
+export function disconnectSocket() {
+  activePropertyId = null;
+  socket?.disconnect();
 }
