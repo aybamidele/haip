@@ -13,9 +13,9 @@ export class EventsService {
   constructor(private readonly gateway: EventsGateway) {}
 
   @OnEvent('**')
-  handleAllEvents(payload: PmsEvent) {
+  async handleAllEvents(payload: PmsEvent) {
     if (!payload?.propertyId) return;
-    this.gateway.broadcastToProperty(
+    await this.gateway.broadcastToProperty(
       payload.propertyId,
       payload.event ?? 'unknown',
       payload.data ?? payload,

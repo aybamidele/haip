@@ -2,6 +2,7 @@ import { UnauthorizedException } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
 import { describe, expect, it } from 'vitest';
 
+import { PermissionsService } from './permissions.service';
 import { JwtStrategy } from './jwt.strategy';
 
 /**
@@ -13,7 +14,7 @@ import { JwtStrategy } from './jwt.strategy';
  */
 function strategy(env: Record<string, string>): JwtStrategy {
   const config = new ConfigService(env);
-  return new JwtStrategy(config as any);
+  return new JwtStrategy(config, { assertActiveIdentity: async () => {} } as PermissionsService);
 }
 
 const BASE = {
@@ -29,25 +30,25 @@ const payload = (azp?: string) => ({
 });
 
 describe('azp allow-list', () => {
-  it('unset: only the primary client passes (the old behaviour, unchanged)', () => {
+  it('unset: only the primary client passes (the old behaviour, unchanged)', async () => {
     const s = strategy(BASE);
-    expect(s.validate(payload('haip-dashboard')).sub).toBe('user-1');
-    expect(() => s.validate(payload('enquiry-service'))).toThrow(UnauthorizedException);
+    expect((await s.validate(payload('haip-dashboard'))).sub).toBe('user-1');
+    await expect(s.validate(payload('enquiry-service'))).rejects.toBeInstanceOf(UnauthorizedException);
   });
 
-  it('set: every listed client passes, anything else still fails', () => {
+  it('set: every listed client passes, anything else still fails', async () => {
     const s = strategy({ ...BASE, KEYCLOAK_ALLOWED_AZP: 'haip-dashboard, enquiry-service' });
-    expect(s.validate(payload('haip-dashboard')).sub).toBe('user-1');
-    expect(s.validate(payload('enquiry-service')).sub).toBe('user-1');
-    expect(() => s.validate(payload('some-other-client'))).toThrow(UnauthorizedException);
+    expect((await s.validate(payload('haip-dashboard'))).sub).toBe('user-1');
+    expect((await s.validate(payload('enquiry-service'))).sub).toBe('user-1');
+    await expect(s.validate(payload('some-other-client'))).rejects.toBeInstanceOf(UnauthorizedException);
   });
 
-  it('a token with no azp is not rejected by this check (unchanged)', () => {
+  it('a token with no azp is not rejected by this check (unchanged)', async () => {
     const s = strategy({ ...BASE, KEYCLOAK_ALLOWED_AZP: 'haip-dashboard' });
-    expect(s.validate(payload(undefined)).sub).toBe('user-1');
+    expect((await s.validate(payload(undefined))).sub).toBe('user-1');
   });
 
-  it('the list does not widen aud: KEYCLOAK_AUDIENCE stays single-valued', () => {
+  it('the list does not widen aud: KEYCLOAK_AUDIENCE stays single-valued', async () => {
     // The allow-list applies to azp only. Passport's audience check above this
     // layer still requires the single configured audience, which callers add
     // via an audience mapper — the two mechanisms stay separate on purpose.
@@ -56,6 +57,6 @@ describe('azp allow-list', () => {
       KEYCLOAK_AUDIENCE: 'haip-dashboard',
       KEYCLOAK_ALLOWED_AZP: 'haip-dashboard,enquiry-service',
     });
-    expect(s.validate(payload('enquiry-service')).sub).toBe('user-1');
+    expect((await s.validate(payload('enquiry-service'))).sub).toBe('user-1');
   });
 });
