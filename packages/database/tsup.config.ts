@@ -11,6 +11,8 @@ export default defineConfig({
     'src/run-migrations.ts',
     'src/seed.ts',
     'src/seed-staging.ts',
+    // Production images can provision scoped integration principals without tsx/source.
+    'src/link-integration-principal.ts',
   ],
   format: ['esm', 'cjs'],
   dts: true,
