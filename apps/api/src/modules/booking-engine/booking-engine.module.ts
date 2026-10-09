@@ -4,6 +4,7 @@ import { BookingMaintenanceService } from './booking-maintenance.service';
 import { IcalModule } from '../ical/ical.module';
 import { WebhookModule } from '../webhook/webhook.module';
 import { Module } from '@nestjs/common';
+import { LinkedBookingController } from './linked-booking.controller';
 import { BookingEngineController } from './booking-engine.controller';
 import { BookingEngineAdminController } from './booking-engine-admin.controller';
 import { BookingReturnController } from './booking-return.controller';
@@ -41,7 +42,7 @@ import { PolicyModule } from '../policy/policy.module';
     AncillaryModule,
     PolicyModule,
   ],
-  controllers: [BookingEngineController, BookingEngineAdminController, BookingReturnController],
+  controllers: [LinkedBookingController, BookingEngineController, BookingEngineAdminController, BookingReturnController],
   providers: [
     BookingEngineService,
     BookingMaintenanceService,

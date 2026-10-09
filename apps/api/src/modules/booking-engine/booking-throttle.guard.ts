@@ -44,7 +44,7 @@ export class BookingThrottleGuard implements CanActivate {
     const req = context.switchToHttp().getRequest();
     if (!req) return true;
 
-    const propertyId = req.bookingEngine?.propertyId ?? req.body?.propertyId ?? 'unknown';
+    const propertyId = req.bookingEngine?.propertyId ?? req.body?.propertyId ?? req.query?.propertyId ?? 'unknown';
     const key = `${this.clientIp(req)}:${propertyId}`;
     const now = Date.now();
     const entry = this.hits.get(key);

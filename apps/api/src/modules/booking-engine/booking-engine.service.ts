@@ -383,7 +383,7 @@ export class BookingEngineService {
 
   // --- Book (the heart) ---
 
-  async book(propertyId: string, dto: BeCreateBookingDto) {
+  async book(propertyId: string, dto: BeCreateBookingDto, existingGuest?: { guestId: string; propertyId: string }) {
     const config = await this.bookingEngineConfig.getPublicConfig(propertyId);
     if (!config.isEnabled) {
       throw new ForbiddenException('Direct booking is not enabled for this property');
@@ -430,12 +430,24 @@ export class BookingEngineService {
 
     // 2. Guest — walk-in exception (no prior reservation; one is created next).
     //    We intentionally do NOT do an unscoped email lookup (cross-tenant PII leak).
-    const guest = await this.guestService.create({
-      firstName: dto.guestFirstName,
-      lastName: dto.guestLastName,
-      email: dto.guestEmail,
-      phone: dto.guestPhone,
-    } as any);
+    // Trusted integrations verify access to both source and target properties.
+    // The public route never supplies this reference; never perform a global email lookup.
+    const guest = existingGuest
+      ? await this.guestService.findById(existingGuest.guestId, existingGuest.propertyId)
+      : await this.guestService.create({
+          firstName: dto.guestFirstName,
+          lastName: dto.guestLastName,
+          email: dto.guestEmail,
+          phone: dto.guestPhone,
+        });
+    if (existingGuest && (
+      guest.email?.toLowerCase() !== dto.guestEmail.toLowerCase()
+      || guest.firstName !== dto.guestFirstName
+      || guest.lastName !== dto.guestLastName
+      || (guest.phone ?? '') !== (dto.guestPhone ?? '')
+    )) {
+      throw new BadRequestException('Guest contact changed; refresh before booking');
+    }
 
     // 3. Reservation via the canonical path (DNR + FK-ownership + TOCTOU
     //    availability + emits `reservation.created`). High-entropy confirmation
