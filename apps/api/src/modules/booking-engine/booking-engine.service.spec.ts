@@ -33,7 +33,7 @@ function makeService(overrides: Partial<Record<string, any>> = {}) {
     findById: vi.fn().mockResolvedValue({ id: RP, roomTypeId: RT, currencyCode: 'USD' }),
   };
   const tax = { calculateTaxes: vi.fn().mockResolvedValue([{ amount: '10.00' }]) };
-  const guest = { create: vi.fn().mockResolvedValue({ id: 'guest-1' }) };
+  const guest = { create: vi.fn().mockResolvedValue({ id: 'guest-1' }), findById: vi.fn().mockResolvedValue({ id:'guest-1',firstName:'Ada',lastName:'Lovelace',email:'ada@example.com',phone:null }) };
   const reservation = {
     create: vi.fn().mockResolvedValue({ id: 'res-1', bookingId: 'bk-1', status: 'pending' }),
     confirm: vi.fn().mockResolvedValue({ id: 'res-1', status: 'confirmed' }),
@@ -482,5 +482,33 @@ describe('direct booking safety', () => {
     const { svc, reservation } = makeService();
     await expect(svc.book(PROP, { ...bookDto, adults: 8 })).rejects.toThrow(/accommodate/);
     expect(reservation.create).not.toHaveBeenCalled();
+  });
+});
+
+
+describe('BookingEngineService trusted guest reuse', () => {
+  it('reuses the scoped guest without creating or editing another guest record', async () => {
+    const { svc, guest, reservation } = makeService();
+    await svc.book(PROP, bookDto, { guestId:'guest-1',propertyId:'bbbbbbbb-0000-4000-a000-000000000001' });
+    expect(guest.findById).toHaveBeenCalledWith('guest-1','bbbbbbbb-0000-4000-a000-000000000001');
+    expect(guest.create).not.toHaveBeenCalled();
+    expect(reservation.create).toHaveBeenCalledWith(expect.objectContaining({propertyId:PROP,guestId:'guest-1',source:'direct'}), expect.objectContaining({allowOverbooking:false}));
+  });
+  it('rejects inaccessible or erased guest records before reservation or payment writes', async () => {
+    const { svc, guest, reservation, payment } = makeService();
+    guest.findById.mockRejectedValue(new Error('Not found'));
+    await expect(svc.book(PROP,bookDto,{guestId:'foreign',propertyId:PROP})).rejects.toThrow();
+    expect(guest.create).not.toHaveBeenCalled();expect(reservation.create).not.toHaveBeenCalled();expect(payment.authorizePayment).not.toHaveBeenCalled();
+  });
+  it('rejects changed contact details without silently overwriting the existing profile', async () => {
+    const { svc, guest, reservation } = makeService();
+    await expect(svc.book(PROP,{...bookDto,guestEmail:'another@example.test'},{guestId:'guest-1',propertyId:PROP})).rejects.toThrow(/changed/);
+    expect(guest.create).not.toHaveBeenCalled();expect(reservation.create).not.toHaveBeenCalled();
+  });
+  it('preserves DNR and availability rejection through the canonical reservation path', async () => {
+    const { svc, reservation, guest } = makeService();
+    reservation.create.mockRejectedValue(new ForbiddenException('Do Not Rent'));
+    await expect(svc.book(PROP,bookDto,{guestId:'guest-1',propertyId:PROP})).rejects.toThrow(/Do Not Rent/);
+    expect(guest.create).not.toHaveBeenCalled();
   });
 });

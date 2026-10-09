@@ -73,4 +73,9 @@ describe('Unauthenticated access to financial module routes', () => {
       expect(res.status).toBe(401);
     });
   }
+  it('requires JWT authentication for existing guest reuse even with a publishable booking key', async () => {
+    const response = await request(app.getHttpServer()).post('/api/v1/booking-engine/linked-bookings?propertyId=aaaaaaaa-0000-4000-a000-000000000001').set('x-booking-key','pk_live_untrusted').send({});
+    expect(response.status).toBe(401);
+  });
+
 });
