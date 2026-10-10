@@ -84,7 +84,6 @@ describe('StripeSavedPaymentMethodGateway', () => {
       {
         customer: 'cus_trusted',
         usage: 'off_session',
-        payment_method_types: ['card'],
         metadata: {
           haip_property_id: provenance.propertyId,
           haip_application_hash:

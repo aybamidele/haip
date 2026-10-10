@@ -30,7 +30,6 @@ export class StripeSavedPaymentMethodGateway implements SavedPaymentMethodGatewa
     }
 
     this.stripe = new Stripe(secretKey, {
-      apiVersion: '2025-03-31.basil',
       typescript: true,
     });
   }
@@ -54,7 +53,6 @@ export class StripeSavedPaymentMethodGateway implements SavedPaymentMethodGatewa
       {
         customer: customer.id,
         usage: 'off_session',
-        payment_method_types: ['card'],
         metadata: {
           [PROPERTY_METADATA_KEY]: provenance.propertyId,
           [APPLICATION_METADATA_KEY]: this.applicationHash(provenance.applicationId),

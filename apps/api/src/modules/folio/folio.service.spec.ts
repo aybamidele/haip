@@ -313,7 +313,7 @@ describe('FolioService', () => {
         type: 'tax',
         parentChargeId: base.id,
       };
-      const rows = [[mockFolio], [targetFolio], [taxChild], [base]];
+      const rows = [[mockFolio], [targetFolio], [], [], [taxChild], [base]];
       let call = 0;
       const db: any = {
         transaction: vi.fn(async (work: (tx: any) => Promise<unknown>) => work(db)),
@@ -695,9 +695,9 @@ describe('FolioService', () => {
             where: vi.fn().mockReturnValue({
               then: (resolve: any) => {
                 selectCallCount++;
-                // 1: find original charge, 2: check already reversed (none), 3-4: recalculate
+                // 1: original, 2: no collectible invoice, 3: no reversal, then children/balance
                 if (selectCallCount === 1) resolve([mockCharge]);
-                else if (selectCallCount === 2) resolve([]);
+                else if (selectCallCount <= 3) resolve([]);
                 else resolve([{ total: '0' }]);
               },
             }),

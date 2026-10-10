@@ -1,3 +1,4 @@
+import { StripeRefundService } from './stripe-refund.service';
 import {
   Controller,
   Post,
@@ -7,13 +8,15 @@ import {
   BadRequestException,
   Inject,
   Optional,
+  ServiceUnavailableException,
+  ConflictException,
 } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
 import { ApiTags, ApiOperation, ApiExcludeEndpoint } from '@nestjs/swagger';
 import { Public } from '../auth/public.decorator';
-import { eq, and } from 'drizzle-orm';
+import { eq, and, inArray } from 'drizzle-orm';
 import { Decimal } from 'decimal.js';
-import { payments } from '@telivityhaip/database';
+import { payments, stripeCheckouts, stripeInvoices } from '@telivityhaip/database';
 import { DRIZZLE } from '../../database/database.module';
 import { WebhookService } from '../webhook/webhook.service';
 import { FolioService } from '../folio/folio.service';
@@ -25,6 +28,10 @@ import {
   type BookingRequestStripePaymentRow,
 } from './booking-request-stripe-handler.interface';
 import { classifyHaipMetadata } from './stripe-financial-state';
+import { StripeInvoiceService } from './stripe-invoice.service';
+import { StripeCheckoutService } from './stripe-checkout.service';
+import { StripeEventService, type StripeEmit } from './stripe-event.service';
+import { stripeMinorUnits, stripeMajorUnits } from './stripe-money';
 import Stripe from 'stripe';
 
 /**
@@ -54,14 +61,17 @@ export class StripeWebhookController {
     @Optional()
     @Inject(BOOKING_REQUEST_STRIPE_HANDLER)
     private readonly bookingRequestStripeHandler?: BookingRequestStripeHandler,
+    @Optional() private readonly stripeEvents?: StripeEventService,
+    @Optional() private readonly checkoutService?: StripeCheckoutService,
+    @Optional() private readonly invoiceService?: StripeInvoiceService,
+    @Optional() private readonly refundService?: StripeRefundService,
   ) {
     const secretKey = this.configService.get<string>('STRIPE_SECRET_KEY');
     this.webhookSecret = this.configService.get<string>('STRIPE_WEBHOOK_SECRET') ?? null;
 
     if (secretKey) {
       this.stripe = new Stripe(secretKey, {
-        apiVersion: '2025-03-31.basil',
-        typescript: true,
+          typescript: true,
       });
     }
   }
@@ -72,10 +82,12 @@ export class StripeWebhookController {
   async handleWebhook(@Req() req: any, @Res() res: any) {
     const stripeMode = this.configService.get<string>('STRIPE_MODE', 'mock');
 
-    if (stripeMode === 'mock' || !this.stripe) {
+    if (stripeMode === 'mock') {
       // In mock mode, webhooks are not processed
       return res.status(200).json({ received: true, mode: 'mock' });
     }
+
+    if (!this.stripe) throw new ServiceUnavailableException('Stripe webhook is not configured');
 
     // Verify webhook signature
     const signature = req.headers['stripe-signature'] as string;
@@ -100,160 +112,120 @@ export class StripeWebhookController {
       }
       event = this.stripe.webhooks.constructEvent(rawBody, signature, this.webhookSecret);
     } catch (err: any) {
-      this.logger.error(`Webhook signature verification failed: ${err.message}`);
-      throw new BadRequestException(`Webhook signature verification failed: ${err.message}`);
+      this.logger.warn({ event: 'stripe_webhook_signature_rejected' });
+      throw new BadRequestException('Invalid Stripe webhook signature');
     }
 
     this.logger.log(`Stripe webhook received: ${event.type} (${event.id})`);
 
     try {
+      await (this.stripeEvents ?? new StripeEventService(this.db, this.webhookService)).process(event, async (tx, emit) => {
       switch (event.type) {
+        case 'invoice.paid':
+        case 'invoice.payment_failed':
+        case 'invoice.voided':
+        case 'invoice.marked_uncollectible':
+          if (!this.invoiceService) throw new Error('Stripe invoice handler is not registered');
+          await this.invoiceService.handleInvoice(event.data.object as Stripe.Invoice, tx, emit);
+          break;
+        case 'checkout.session.completed':
+        case 'checkout.session.async_payment_succeeded':
+        case 'checkout.session.async_payment_failed':
+        case 'checkout.session.expired':
+          if (!this.checkoutService) throw new Error('Stripe Checkout handler is not registered');
+          await this.checkoutService.handleSession(event.data.object as Stripe.Checkout.Session, tx, emit);
+          break;
         case 'payment_intent.succeeded':
-          await this.handlePaymentIntentSucceeded(event.data.object as Stripe.PaymentIntent);
+          await this.handlePaymentIntentSucceeded(event.data.object as Stripe.PaymentIntent, tx, emit);
           break;
 
         case 'payment_intent.payment_failed':
-          await this.handlePaymentIntentFailed(event.data.object as Stripe.PaymentIntent);
+          await this.handlePaymentIntentFailed(event.data.object as Stripe.PaymentIntent, tx, emit);
           break;
 
         case 'payment_intent.canceled':
-          await this.handlePaymentIntentCanceled(event.data.object as Stripe.PaymentIntent);
+          await this.handlePaymentIntentCanceled(event.data.object as Stripe.PaymentIntent, tx, emit);
           break;
 
         case 'payment_intent.processing':
-          await this.handlePaymentIntentProcessing(event.data.object as Stripe.PaymentIntent);
+          await this.handlePaymentIntentProcessing(event.data.object as Stripe.PaymentIntent, tx, emit);
           break;
 
         case 'payment_intent.requires_action':
-          await this.handlePaymentIntentRequiresAction(event.data.object as Stripe.PaymentIntent);
+          await this.handlePaymentIntentRequiresAction(event.data.object as Stripe.PaymentIntent, tx, emit);
           break;
 
         case 'refund.created':
         case 'refund.updated':
         case 'refund.failed':
-          await this.handleRefundUpdated(event.data.object as Stripe.Refund);
+          await this.handleRefundUpdated(event.data.object as Stripe.Refund, tx, emit);
           break;
 
         case 'charge.refunded':
-          await this.handleChargeRefunded(event.data.object as Stripe.Charge);
+          await this.handleChargeRefunded(event.data.object as Stripe.Charge, tx, emit);
           break;
 
         default:
           this.logger.debug(`Unhandled event type: ${event.type}`);
       }
+      });
     } catch (err: any) {
-      this.logger.error(`Error processing webhook ${event.type}: ${err.message}`, err.stack);
-      // Return 200 to prevent Stripe retries for processing errors
-      // The error is logged for manual investigation
+      this.logger.error({ event: 'stripe_webhook_processing_failed', eventId: event.id, eventType: event.type });
+      throw new ServiceUnavailableException('Stripe event processing failed; retry delivery');
     }
 
     return res.status(200).json({ received: true });
   }
 
-  private async handlePaymentIntentSucceeded(pi: Stripe.PaymentIntent) {
-    const payment = await this.resolvePaymentForIntent(pi);
-    if (!payment) return;
-
-    if (this.shouldDelegateToBookingRequestHandler(payment)) {
-      await this.bookingRequestStripeHandler!.handlePaymentIntentSucceeded(pi, payment);
-      return;
-    }
-
-    if (payment.status === 'captured') {
-      this.logger.debug(`Payment ${payment.id} already captured, skipping`);
-      return;
-    }
-
-    await this.db
-      .update(payments)
-      .set({ status: 'captured', processedAt: new Date(), updatedAt: new Date() })
-      .where(and(eq(payments.id, payment.id), eq(payments.propertyId, payment.propertyId)));
-
-    // Recalculate folio balance after payment state change
-    if (payment.folioId) {
-      await this.folioService.recalculateBalance(payment.folioId, payment.propertyId);
-    }
-
-    await this.webhookService.emit(
-      'payment.received',
-      'payment',
-      payment.id,
-      { folioId: payment.folioId, status: 'captured', stripeEvent: pi.id },
-      payment.propertyId,
-    );
-
-    this.logger.log(`Payment ${payment.id} updated to captured via webhook`);
+  private async handlePaymentIntentSucceeded(pi: Stripe.PaymentIntent, db = this.db, emit: StripeEmit = this.webhookService.emit.bind(this.webhookService)) {
+    await this.transitionIntent(pi, 'captured', db, emit);
   }
 
-  private async handlePaymentIntentFailed(pi: Stripe.PaymentIntent) {
-    const payment = await this.resolvePaymentForIntent(pi);
-    if (!payment) return;
-
-    if (this.shouldDelegateToBookingRequestHandler(payment)) {
-      await this.bookingRequestStripeHandler!.handlePaymentIntentFailed(pi, payment);
-      return;
-    }
-
-    if (payment.status === 'failed') return;
-
-    const errorMessage = pi.last_payment_error?.message ?? 'Payment failed';
-
-    await this.db
-      .update(payments)
-      .set({ status: 'failed', notes: errorMessage, updatedAt: new Date() })
-      .where(and(eq(payments.id, payment.id), eq(payments.propertyId, payment.propertyId)));
-
-    // Recalculate folio balance after payment state change
-    if (payment.folioId) {
-      await this.folioService.recalculateBalance(payment.folioId, payment.propertyId);
-    }
-
-    await this.webhookService.emit(
-      'payment.failed',
-      'payment',
-      payment.id,
-      { folioId: payment.folioId, error: errorMessage, stripeEvent: pi.id },
-      payment.propertyId,
-    );
-
-    this.logger.log(`Payment ${payment.id} updated to failed via webhook`);
+  private async handlePaymentIntentFailed(pi: Stripe.PaymentIntent, db = this.db, emit: StripeEmit = this.webhookService.emit.bind(this.webhookService)) {
+    await this.transitionIntent(pi, 'failed', db, emit);
   }
 
-  private async handlePaymentIntentCanceled(pi: Stripe.PaymentIntent) {
-    const payment = await this.resolvePaymentForIntent(pi);
-    if (!payment) return;
-
-    if (this.shouldDelegateToBookingRequestHandler(payment)) {
-      await this.bookingRequestStripeHandler!.handlePaymentIntentCanceled(pi, payment);
-      return;
-    }
-
-    if (payment.status === 'voided') return;
-
-    await this.db
-      .update(payments)
-      .set({ status: 'voided', updatedAt: new Date() })
-      .where(and(eq(payments.id, payment.id), eq(payments.propertyId, payment.propertyId)));
-
-    // Recalculate folio balance after payment state change
-    if (payment.folioId) {
-      await this.folioService.recalculateBalance(payment.folioId, payment.propertyId);
-    }
-
-    await this.webhookService.emit(
-      'payment.failed',
-      'payment',
-      payment.id,
-      { folioId: payment.folioId, status: 'voided', stripeEvent: pi.id },
-      payment.propertyId,
-    );
-
-    this.logger.log(`Payment ${payment.id} updated to voided via webhook`);
+  private async handlePaymentIntentCanceled(pi: Stripe.PaymentIntent, db = this.db, emit: StripeEmit = this.webhookService.emit.bind(this.webhookService)) {
+    await this.transitionIntent(pi, 'voided', db, emit);
   }
 
-  private async handlePaymentIntentProcessing(pi: Stripe.PaymentIntent) {
+  private async transitionIntent(pi: Stripe.PaymentIntent, target: 'captured' | 'failed' | 'voided', db: any, emit: StripeEmit) {
+    const payment = await this.resolvePaymentForIntent(pi, db);
+    if (!payment) return;
+    if (this.shouldDelegateToBookingRequestHandler(payment)) {
+      // The optional package already commits its own idempotent ledger/consequences.
+      if (target === 'captured') await this.bookingRequestStripeHandler!.handlePaymentIntentSucceeded(pi, payment);
+      else if (target === 'failed') await this.bookingRequestStripeHandler!.handlePaymentIntentFailed(pi, payment);
+      else await this.bookingRequestStripeHandler!.handlePaymentIntentCanceled(pi, payment);
+      return;
+    }
+    const [checkout] = await db.select({ id: stripeCheckouts.id }).from(stripeCheckouts).where(and(eq(stripeCheckouts.paymentId, payment.id), eq(stripeCheckouts.propertyId, payment.propertyId)));
+    if (checkout) return; // Checkout reconciliation owns capture + reservation + deposit in one transaction.
+    const [invoice] = await db.select({ id: stripeInvoices.id }).from(stripeInvoices).where(and(eq(stripeInvoices.paymentId, payment.id), eq(stripeInvoices.propertyId, payment.propertyId)));
+    if (invoice) return; // invoice.paid owns invoice settlement.
+    if (pi.currency?.toUpperCase() !== payment.currencyCode?.toUpperCase()
+      || pi.amount !== stripeMinorUnits(payment.amount, payment.currencyCode)) {
+      throw new ConflictException('Stripe payment does not match the ledger amount and currency');
+    }
+    if (payment.status === target || ['captured', 'settled', 'refunded', 'partially_refunded'].includes(payment.status)) return;
+    // Failed card attempts may subsequently succeed on the same Intent; terminal
+    // cancellation cannot be reversed by an older provider notification.
+    const allowed = target === 'captured' ? ['pending', 'authorized', 'failed'] : ['pending', 'authorized'];
+    if (!allowed.includes(payment.status)) return;
+    const [updated] = await db.update(payments).set({ status: target,
+      gatewayTransactionId: pi.id, processedAt: target === 'captured' ? new Date() : null,
+      updatedAt: new Date() }).where(and(eq(payments.id, payment.id), eq(payments.propertyId, payment.propertyId),
+        inArray(payments.status, allowed as any))).returning();
+    if (!updated) return;
+    if (payment.folioId) await this.folioService.recalculateBalance(payment.folioId, payment.propertyId, db);
+    await emit(target === 'captured' ? 'payment.received' : 'payment.failed', 'payment', payment.id,
+      { folioId: payment.folioId, status: target, stripeEvent: pi.id,
+        ...(target === 'failed' ? { error: pi.last_payment_error?.message ?? 'Payment failed' } : {}) }, payment.propertyId);
+  }
+
+  private async handlePaymentIntentProcessing(pi: Stripe.PaymentIntent, db = this.db, _emit?: StripeEmit) {
     if (!this.bookingRequestStripeHandler) return;
-    const payment = await this.findPaymentByGatewayTransactionId(pi.id);
+    const payment = await this.findPaymentByGatewayTransactionId(pi.id, db);
     if (payment && !this.shouldDelegateToBookingRequestHandler(payment)) return;
     await this.bookingRequestStripeHandler.handlePaymentIntentProcessing(
       pi,
@@ -261,9 +233,9 @@ export class StripeWebhookController {
     );
   }
 
-  private async handlePaymentIntentRequiresAction(pi: Stripe.PaymentIntent) {
+  private async handlePaymentIntentRequiresAction(pi: Stripe.PaymentIntent, db = this.db, _emit?: StripeEmit) {
     if (!this.bookingRequestStripeHandler) return;
-    const payment = await this.findPaymentByGatewayTransactionId(pi.id);
+    const payment = await this.findPaymentByGatewayTransactionId(pi.id, db);
     if (payment && !this.shouldDelegateToBookingRequestHandler(payment)) return;
     await this.bookingRequestStripeHandler.handlePaymentIntentRequiresAction(
       pi,
@@ -271,7 +243,13 @@ export class StripeWebhookController {
     );
   }
 
-  private async handleRefundUpdated(refund: Stripe.Refund) {
+  private async handleRefundUpdated(refund: Stripe.Refund, tx?: any, emit?: StripeEmit) {
+    if (refund.metadata?.['haip_refund_payment_id']) {
+      if (!this.refundService || !tx || !emit) throw new Error('Stripe refund handler is not registered');
+      await this.refundService.handleRefund(refund, tx, emit);
+      return;
+    }
+    if (this.refundService && tx && emit) await this.refundService.handleRefund(refund, tx, emit);
     if (!this.bookingRequestStripeHandler) return;
     await this.bookingRequestStripeHandler.handleRefundUpdated(refund);
   }
@@ -290,14 +268,14 @@ export class StripeWebhookController {
     };
   }
 
-  private async handleChargeRefunded(charge: Stripe.Charge) {
+  private async handleChargeRefunded(charge: Stripe.Charge, db = this.db, emit: StripeEmit = this.webhookService.emit.bind(this.webhookService)) {
     const piId = typeof charge.payment_intent === 'string'
       ? charge.payment_intent
       : charge.payment_intent?.id;
 
     if (!piId) return;
 
-    const payment = await this.findPaymentByGatewayTransactionId(piId);
+    const payment = await this.findPaymentByGatewayTransactionId(piId, db);
     if (!payment) return;
 
     if (this.shouldDelegateToBookingRequestHandler(payment)) {
@@ -305,10 +283,12 @@ export class StripeWebhookController {
       return;
     }
 
-    const stripeRefundedDec = new Decimal(charge.amount_refunded).div(100);
+    if (this.refundService && db !== this.db) { await this.refundService.reconcileCharge(charge, db, emit); return; }
+    if (charge.currency?.toUpperCase() !== payment.currencyCode || charge.amount_refunded > stripeMinorUnits(payment.amount, payment.currencyCode)) throw new ConflictException('Refund charge amount or currency mismatch');
+    const stripeRefundedDec = new Decimal(stripeMajorUnits(charge.amount_refunded, payment.currencyCode));
     const ledgerKey = `stripe_refund:${charge.id}:${stripeRefundedDec.toFixed(2)}`;
 
-    const recorded = await this.db.transaction(async (tx: any) => {
+    const recordRefund = async (tx: any) => {
       const [parent] = await tx
         .select()
         .from(payments)
@@ -325,7 +305,7 @@ export class StripeWebhookController {
       const [existingForLedger] = await tx
         .select({ id: payments.id })
         .from(payments)
-        .where(eq(payments.gatewayTransactionId, ledgerKey))
+        .where(and(eq(payments.gatewayTransactionId, ledgerKey), eq(payments.propertyId, payment.propertyId)))
         .limit(1);
       if (existingForLedger) {
         return null;
@@ -341,7 +321,7 @@ export class StripeWebhookController {
           ),
         );
 
-      const alreadyRefundedDec = sumRefundChildren(existingRefunds ?? []);
+      const alreadyRefundedDec = sumRefundChildren((existingRefunds ?? []).filter((child: any) => !child.status || ['captured', 'settled'].includes(child.status)));
       const deltaDec = stripeRefundedDec.minus(alreadyRefundedDec);
 
       if (deltaDec.lte(0)) {
@@ -370,11 +350,12 @@ export class StripeWebhookController {
 
       await this.folioService.recalculateBalance(parent.folioId, parent.propertyId, tx);
       return { row, parent, deltaDec };
-    });
+    };
+    const recorded = db === this.db ? await this.db.transaction(recordRefund) : await recordRefund(db);
 
     if (!recorded) return;
 
-    await this.webhookService.emit(
+    await emit(
       'payment.refunded',
       'payment',
       recorded.row.id,
@@ -397,22 +378,25 @@ export class StripeWebhookController {
    * so legacy instant-booking intents without haip_* metadata still reconcile;
    * only unmatched intents with no HAIP metadata are treated as external noise.
    */
-  private async resolvePaymentForIntent(pi: Stripe.PaymentIntent) {
-    const payment = await this.findPaymentByGatewayTransactionId(pi.id);
+  private async resolvePaymentForIntent(pi: Stripe.PaymentIntent, db = this.db) {
+    const payment = await this.findPaymentByGatewayTransactionId(pi.id, db);
     if (payment) return payment;
-    if (classifyHaipMetadata(pi.metadata) === 'external') {
-      this.logger.debug(`Ignoring unrelated Stripe PaymentIntent ${pi.id}`);
-      return null;
+    const propertyId = pi.metadata?.['haip_property_id'];
+    const paymentId = pi.metadata?.['haip_payment_id'];
+    const uuid = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+    if (propertyId && paymentId && uuid.test(propertyId) && uuid.test(paymentId)) {
+      const [correlated] = await db.select().from(payments).where(and(eq(payments.id, paymentId),
+        eq(payments.propertyId, propertyId), eq(payments.gatewayProvider, 'stripe'))).for('update');
+      if (correlated && (!correlated.gatewayTransactionId || correlated.gatewayTransactionId === pi.id)) return correlated;
     }
-    this.logger.warn(`No payment found for PaymentIntent ${pi.id}`);
-    return null;
+    if (classifyHaipMetadata(pi.metadata) === 'external') return null;
+    throw new ConflictException('Owned Stripe payment is not yet correlated');
   }
 
-  private async findPaymentByGatewayTransactionId(transactionId: string) {
-    const [payment] = await this.db
-      .select()
-      .from(payments)
-      .where(eq(payments.gatewayTransactionId, transactionId));
+  private async findPaymentByGatewayTransactionId(transactionId: string, db = this.db) {
+    // Signed server notification is the sole unscoped lookup; all subsequent writes are tenant scoped.
+    const [payment] = await db.select().from(payments)
+      .where(and(eq(payments.gatewayTransactionId, transactionId), eq(payments.gatewayProvider, 'stripe')));
     return (payment ?? null) as BookingRequestStripePaymentRow | null;
   }
 

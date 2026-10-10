@@ -1,4 +1,9 @@
+import { StripeRefundService } from './stripe-refund.service';
 import { Module } from '@nestjs/common';
+import { StripeEventService } from './stripe-event.service';
+import { StripeCheckoutService } from './stripe-checkout.service';
+import { StripeInvoiceController } from './stripe-invoice.controller';
+import { StripeInvoiceService } from './stripe-invoice.service';
 import { ConfigModule, ConfigService } from '@nestjs/config';
 import { FolioModule } from '../folio/folio.module';
 import { WebhookModule } from '../webhook/webhook.module';
@@ -39,11 +44,16 @@ function createSavedPaymentMethodGateway(configService: ConfigService) {
 @Module({
   imports: [ConfigModule, FolioModule, WebhookModule, IntegrationsModule],
   controllers: [
+    StripeInvoiceController,
     PaymentController,
     StripeWebhookController,
     RedsysWebhookController,
   ],
   providers: [
+    StripeEventService,
+    StripeCheckoutService,
+    StripeInvoiceService,
+    StripeRefundService,
     PaymentService,
     RedsysCredentialsService,
     {
@@ -59,6 +69,6 @@ function createSavedPaymentMethodGateway(configService: ConfigService) {
       inject: [ConfigService],
     },
   ],
-  exports: [PaymentService, PAYMENT_GATEWAY, SAVED_PAYMENT_METHOD_GATEWAY],
+  exports: [PaymentService, PAYMENT_GATEWAY, SAVED_PAYMENT_METHOD_GATEWAY, StripeEventService, StripeCheckoutService],
 })
 export class PaymentModule {}

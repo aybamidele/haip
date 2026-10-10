@@ -478,6 +478,7 @@ function FolioDetail() {
   const [authAmount, setAuthAmount] = useState('');
   const [refundTarget, setRefundTarget] = useState<Payment | null>(null);
   const [refundAmount, setRefundAmount] = useState('');
+  const [refundKey, setRefundKey] = useState('');
   const [correctTarget, setCorrectTarget] = useState<Payment | null>(null);
   const [correctOp, setCorrectOp] = useState('');
 
@@ -656,8 +657,8 @@ function FolioDetail() {
   });
 
   const refundMutation = useMutation({
-    mutationFn: ({ paymentId, amount }: { paymentId: string; amount?: string }) =>
-      api.post(`/v1/payments/${paymentId}/refund`, amount ? { amount: moneyString(amount) } : {}),
+    mutationFn: ({ paymentId, amount, idempotencyKey }: { paymentId: string; amount?: string; idempotencyKey: string }) =>
+      api.post(`/v1/payments/${paymentId}/refund`, { ...(amount ? { amount: moneyString(amount) } : {}), idempotencyKey }),
     onSuccess: () => {
       invalidate();
       setRefundTarget(null);
@@ -822,7 +823,7 @@ function FolioDetail() {
                       )}
                       {canRefund && (
                         <button
-                          onClick={() => { setRefundTarget(p); setRefundAmount(''); }}
+                          onClick={() => { setRefundTarget(p); setRefundAmount(''); setRefundKey(crypto.randomUUID()); }}
                           className="text-telivity-orange text-xs hover:underline"
                         >
                           {t('folios.refund')}
@@ -1002,6 +1003,7 @@ function FolioDetail() {
               refundMutation.mutate({
                 paymentId: refundTarget!.id,
                 amount: refundAmount.trim() || undefined,
+                idempotencyKey: refundKey,
               })
             }
             disabled={refundMutation.isPending}

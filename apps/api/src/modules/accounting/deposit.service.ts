@@ -1,6 +1,9 @@
+import { sumRefundChildren } from '../payment/payment-ledger';
+import { PaymentService } from '../payment/payment.service';
 import {
   Injectable,
   Inject,
+  Optional,
   NotFoundException,
   BadRequestException,
 } from '@nestjs/common';
@@ -31,27 +34,29 @@ export class DepositService {
     @Inject(DRIZZLE) private readonly db: any,
     private readonly webhookService: WebhookService,
     private readonly folioService: FolioService,
+    @Optional() private readonly paymentService?: PaymentService,
   ) {}
 
-  async recordDeposit(dto: RecordDepositDto) {
+  async recordDeposit(dto: RecordDepositDto, tx?: any) {
+    const db = tx ?? this.db;
     // FK ownership (security audit follow-on): caller-supplied reservationId
     // and paymentId must belong to dto.propertyId. Schema FK only constrains
     // the row id, so without this a deposit could be attached cross-tenant.
     if (dto.reservationId) {
-      const [r] = await this.db
+      const [r] = await db
         .select({ id: reservations.id })
         .from(reservations)
         .where(and(eq(reservations.id, dto.reservationId), eq(reservations.propertyId, dto.propertyId)));
       if (!r) throw new BadRequestException(`reservation ${dto.reservationId} not found in this property`);
     }
     if (dto.paymentId) {
-      const [p] = await this.db
+      const [p] = await db
         .select({ id: payments.id })
         .from(payments)
         .where(and(eq(payments.id, dto.paymentId), eq(payments.propertyId, dto.propertyId)));
       if (!p) throw new BadRequestException(`payment ${dto.paymentId} not found in this property`);
     }
-    const [entry] = await this.db
+    const [entry] = await db
       .insert(depositLedgerEntries)
       .values({
         propertyId: dto.propertyId,
@@ -65,7 +70,7 @@ export class DepositService {
       })
       .returning();
 
-    await this.webhookService.emit(
+    if (!tx) await this.webhookService.emit(
       'deposit.received',
       'deposit',
       entry.id,
@@ -140,7 +145,15 @@ export class DepositService {
     }
 
     const folioId = dto.folioId;
-    if (folioId) {
+    let alreadyCredited = false;
+    if (entry.paymentId) {
+      const [payment] = await this.db.select().from(payments).where(and(eq(payments.id, entry.paymentId), eq(payments.propertyId, dto.propertyId)));
+      if (payment && ['captured', 'settled', 'partially_refunded'].includes(payment.status)) {
+        if (folioId && payment.folioId !== folioId) throw new BadRequestException('Transfer the captured payment before applying its deposit to another folio');
+        alreadyCredited = true;
+      }
+    }
+    if (folioId && !alreadyCredited) {
       // Post the deposit to the guest ledger as a negative adjustment so the
       // folio balance is reduced by the deposit amount (KB 10.3).
       await this.folioService.postCharge(folioId, {
@@ -184,6 +197,18 @@ export class DepositService {
     }
     if (!entry.isRefundable) {
       throw new BadRequestException('Deposit is non-refundable and cannot be refunded');
+    }
+
+    if (entry.paymentId) {
+      const [receipt] = await this.db.select().from(payments).where(and(eq(payments.id, entry.paymentId), eq(payments.propertyId, propertyId)));
+      if (receipt?.gatewayProvider === 'stripe' && receipt.gatewayTransactionId && ['captured', 'settled', 'partially_refunded'].includes(receipt.status)) {
+        if (!this.paymentService) throw new BadRequestException('Stripe refund service is unavailable');
+        const children = await this.db.select().from(payments).where(and(eq(payments.originalPaymentId, receipt.id), eq(payments.propertyId, propertyId)));
+        const remaining = new Decimal(receipt.amount).minus(sumRefundChildren(children.filter((child: any) => ['captured', 'settled'].includes(child.status))));
+        const result = await this.paymentService.refundPayment(receipt.id, propertyId, remaining.toFixed(2), { idempotencyKey: `deposit_${entry.id}` });
+        const current = await this.findById(id, propertyId);
+        if (result.status !== 'captured' || current.status !== 'held') return current;
+      }
     }
 
     const [updated] = await this.db

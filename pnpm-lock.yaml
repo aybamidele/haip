@@ -120,8 +120,8 @@ importers:
         specifier: ^4.8.3
         version: 4.8.3
       stripe:
-        specifier: ^22.0.0
-        version: 22.0.0(@types/node@22.19.17)
+        specifier: 23.0.0
+        version: 23.0.0(@types/node@22.19.17)
     devDependencies:
       '@nestjs/cli':
         specifier: ^10.4.0
@@ -382,8 +382,8 @@ importers:
         specifier: ^7.8.1
         version: 7.8.2
       stripe:
-        specifier: ^22.0.0
-        version: 22.0.0(@types/node@22.19.17)
+        specifier: 23.0.0
+        version: 23.0.0(@types/node@22.19.17)
       tsup:
         specifier: ^8.3.0
         version: 8.5.1(@swc/core@1.15.24)(jiti@1.21.7)(postcss@8.5.8)(tsx@4.21.0)(typescript@5.9.3)
@@ -453,8 +453,8 @@ importers:
         specifier: ^9.0.0
         version: 9.39.4(jiti@1.21.7)
       stripe:
-        specifier: ^22.0.0
-        version: 22.0.0(@types/node@22.19.17)
+        specifier: 23.0.0
+        version: 23.0.0(@types/node@22.19.17)
       tsup:
         specifier: ^8.3.0
         version: 8.5.1(@swc/core@1.15.24)(jiti@1.21.7)(postcss@8.5.8)(tsx@4.21.0)(typescript@5.9.3)
@@ -4926,9 +4926,9 @@ packages:
     resolution: {integrity: sha512-6fPc+R4ihwqP6N/aIv2f1gMH8lOVtWQHoqC4yK6oSDVVocumAsfCqjkXnqiYMhmMwS/mEHLp7Vehlt3ql6lEig==}
     engines: {node: '>=8'}
 
-  stripe@22.0.0:
-    resolution: {integrity: sha512-q1UgXXpSfZCmkyzZEh3vFEWT7+ajuaFGqaP9Tsi2NMtwlkigIWNr+KBIUQqtNeNEsreDKgdn+BP5HRW9JDj22Q==}
-    engines: {node: '>=18'}
+  stripe@23.0.0:
+    resolution: {integrity: sha512-MDE2A5ZVVluYURORaZEVghSmnLJc3w6aHAlZSxDQMsOjOb3V0O6ro/CiaeFlJS4N7uIVmsg98ocRsPmUK6YfyA==}
+    engines: {node: '>=20'}
     peerDependencies:
       '@types/node': ^22.0.0
     peerDependenciesMeta:
@@ -9901,7 +9901,7 @@ snapshots:
 
   strip-json-comments@3.1.1: {}
 
-  stripe@22.0.0(@types/node@22.19.17):
+  stripe@23.0.0(@types/node@22.19.17):
     optionalDependencies:
       '@types/node': 22.19.17
 

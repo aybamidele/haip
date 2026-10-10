@@ -1,7 +1,8 @@
-import { Inject, Injectable, Logger, type OnModuleInit, type OnModuleDestroy } from '@nestjs/common';
+import { Inject, Injectable, Logger, Optional, type OnModuleInit, type OnModuleDestroy } from '@nestjs/common';
 import { and, eq, lte, notExists, gt, inArray } from 'drizzle-orm';
 import type { PostgresJsDatabase } from 'drizzle-orm/postgres-js';
 import { reservations, payments, folios } from '@telivityhaip/database';
+import { StripeCheckoutService } from '../payment/stripe-checkout.service';
 import { DRIZZLE } from '../../database/database.module';
 import { WebhookService } from '../webhook/webhook.service';
 
@@ -11,7 +12,7 @@ export class BookingMaintenanceService implements OnModuleInit, OnModuleDestroy 
   private readonly logger = new Logger(BookingMaintenanceService.name);
   private timer?: ReturnType<typeof setInterval>;
   private running = false;
-  constructor(@Inject(DRIZZLE) private readonly db: PostgresJsDatabase, private readonly webhooks: WebhookService) {}
+  constructor(@Inject(DRIZZLE) private readonly db: PostgresJsDatabase, private readonly webhooks: WebhookService, @Optional() private readonly checkout?: StripeCheckoutService) {}
   onModuleInit() { this.timer = setInterval(() => void this.run(), 15_000); this.timer.unref(); }
   onModuleDestroy() { if (this.timer) clearInterval(this.timer); }
   async run() {
@@ -47,6 +48,9 @@ export class BookingMaintenanceService implements OnModuleInit, OnModuleDestroy 
       for (const row of expired) await this.webhooks.emit('reservation.cancelled', 'reservation', row.id,
         { reservationId: row.id, roomTypeId: row.roomTypeId, arrivalDate: row.arrivalDate, departureDate: row.departureDate, cancellationReason: 'Unpaid hold expired' }, row.propertyId);
     } catch { this.logger.error({ event: 'booking_maintenance_failed' }); }
-    finally { this.running = false; }
+    finally {
+      try { await this.checkout?.expireSessions(); } catch { this.logger.error({ event: 'stripe_checkout_expiry_failed' }); }
+      this.running = false;
+    }
   }
 }

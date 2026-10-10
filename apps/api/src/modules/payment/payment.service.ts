@@ -1,14 +1,16 @@
+import { StripeRefundService } from './stripe-refund.service';
 import {
   Injectable,
   Inject,
   NotFoundException,
   BadRequestException,
   ConflictException,
+  Optional,
 } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
-import { eq, and, isNull, sql } from 'drizzle-orm';
+import { eq, and, isNull, inArray, gt, sql } from 'drizzle-orm';
 import { Decimal } from 'decimal.js';
-import { payments, reservations } from '@telivityhaip/database';
+import { payments, reservations, folios, stripeInvoices } from '@telivityhaip/database';
 import { DRIZZLE } from '../../database/database.module';
 import { WebhookService } from '../webhook/webhook.service';
 import { FolioService } from '../folio/folio.service';
@@ -48,6 +50,7 @@ export class PaymentService {
     private readonly webhookService: WebhookService,
     private readonly configService: ConfigService,
     private readonly redsysCredentials: RedsysCredentialsService,
+    @Optional() private readonly stripeRefunds?: StripeRefundService,
   ) {}
 
   async recordPayment(dto: CreatePaymentDto) {
@@ -107,11 +110,11 @@ export class PaymentService {
           .where(and(eq(reservations.id, folio.reservationId), eq(reservations.propertyId, dto.propertyId)))
           .for('update');
       }
+      await this.assertFolioCollectible(tx, dto.folioId, dto.propertyId);
       const [received] = await tx.insert(payments).values({ ...dto, method: dto.method as typeof payments.$inferInsert.method, status: 'captured', processedAt }).returning();
+      await this.folioService.recalculateBalance(dto.folioId, dto.propertyId, tx);
       return received;
     });
-
-    await this.folioService.recalculateBalance(dto.folioId, dto.propertyId);
 
     await this.webhookService.emit(
       'payment.received',
@@ -124,12 +127,34 @@ export class PaymentService {
     return this.safePaymentResponse(payment);
   }
 
+  private async assertFolioCollectible(tx: any, folioId: string, propertyId: string) {
+    const [current] = await tx.select().from(folios).where(and(eq(folios.id, folioId), eq(folios.propertyId, propertyId))).for('update');
+    if (!current || current.status !== 'open') throw new ConflictException('Folio is not open');
+    const [invoice] = await tx.select({ id: stripeInvoices.id }).from(stripeInvoices).where(and(eq(stripeInvoices.folioId, folioId),
+      eq(stripeInvoices.propertyId, propertyId), inArray(stripeInvoices.status, ['creating', 'draft', 'open', 'uncollectible']))).limit(1);
+    if (invoice) throw new ConflictException('Void the collectible Stripe invoice before taking another payment');
+    const [pending] = await tx.select().from(payments).where(and(eq(payments.folioId, folioId), eq(payments.propertyId, propertyId),
+      gt(payments.amount, '0'), inArray(payments.status, ['pending', 'authorized']))).limit(1);
+    if (pending && ['pending', 'authorized'].includes(pending.status)) throw new ConflictException('Resolve the pending gateway payment before taking another payment');
+  }
+
   async authorizePayment(
     dto: AuthorizePaymentDto,
     finalization?: AuthorizationFinalization,
     bookingReturn?: { returnReferenceHash: string; returnDestination: string },
-  ) {
-    const folio = await this.folioService.findById(dto.folioId, dto.propertyId);
+    tx?: any,
+    idempotencyKey?: string,
+  ): Promise<any> {
+    // Serialize tokenized collection with invoice creation under the same folio lock.
+    if (!tx && resolvePaymentGatewayProvider(this.configService) === 'stripe') {
+      return this.db.transaction(async (transaction: any) => {
+        await this.assertFolioCollectible(transaction, dto.folioId, dto.propertyId);
+        return this.authorizePayment(dto, finalization, bookingReturn, transaction, idempotencyKey);
+      });
+    }
+    const db = tx ?? this.db;
+    if (tx && resolvePaymentGatewayProvider(this.configService) === 'stripe') await this.assertFolioCollectible(tx, dto.folioId, dto.propertyId);
+    const folio = await this.folioService.findById(dto.folioId, dto.propertyId, tx);
     if (folio.status !== 'open') {
       throw new BadRequestException('Cannot authorize payment on a folio that is not open');
     }
@@ -145,11 +170,11 @@ export class PaymentService {
       dto.gatewayPaymentToken,
       new Decimal(dto.amount).toNumber(),
       dto.currencyCode,
-      gatewayOptions,
+      idempotencyKey ? { ...gatewayOptions, idempotencyKey: `direct_auth_${idempotencyKey}` } : gatewayOptions,
     );
 
     if (!result.success) {
-      const [failed] = await this.db
+      const [failed] = await db
         .insert(payments)
         .values({
           folioId: dto.folioId,
@@ -167,7 +192,7 @@ export class PaymentService {
         })
         .returning();
 
-      await this.webhookService.emit(
+      if (!tx) await this.webhookService.emit(
         'payment.failed',
         'payment',
         failed.id,
@@ -183,7 +208,7 @@ export class PaymentService {
       ? new Date(dto.preAuthExpiresAt)
       : new Date(Date.now() + 7 * 24 * 60 * 60 * 1000); // Default 7 days
 
-    const [payment] = await this.db
+    const [payment] = await db
       .insert(payments)
       .values({
         folioId: dto.folioId,
@@ -208,7 +233,7 @@ export class PaymentService {
 
     if (!requiresAction) {
       // Do NOT recalculate balance — pre-auth is a hold, not a capture
-      await this.webhookService.emit(
+      if (!tx) await this.webhookService.emit(
         'payment.received',
         'payment',
         payment.id,
@@ -446,6 +471,14 @@ export class PaymentService {
     amount?: string,
     options: RefundPaymentOptions = {},
   ) {
+    if (resolvePaymentGatewayProvider(this.configService) === 'stripe') {
+      const original = await this.findPaymentRow(id, propertyId);
+      this.assertGenericAccessAllowed(original);
+      if (original.gatewayProvider === 'stripe') {
+        if (!this.stripeRefunds) throw new ConflictException('Stripe refund reconciliation is unavailable');
+        return this.safePaymentResponse(await this.stripeRefunds.refund(id, propertyId, amount, options.idempotencyKey));
+      }
+    }
     const prepared = await this.db.transaction(async (tx: any) => {
       const [original] = await tx
         .select()

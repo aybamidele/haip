@@ -241,7 +241,14 @@ export class ReservationService {
     return lockRoomInventory(tx, propertyId, roomTypeId);
   }
 
-  async confirm(id: string, propertyId: string) {
+  async confirm(id: string, propertyId: string, tx?: any) {
+    if (tx) {
+      const [current] = await tx.select().from(reservations).where(and(eq(reservations.id, id), eq(reservations.propertyId, propertyId))).for('update');
+      if (!current) throw new NotFoundException('Reservation not found');
+      if (current.holdExpiresAt && current.holdExpiresAt <= new Date()) throw new BadRequestException('Unpaid hold has expired');
+      assertTransition(current.status as ReservationStatus, 'confirmed');
+      return this.claimTransition(id, propertyId, ['pending'], { status: 'confirmed', holdExpiresAt: null, updatedAt: new Date() }, 'confirmed', tx);
+    }
     const reservation = await this.findByIdRaw(id, propertyId);
     if (reservation.holdExpiresAt && reservation.holdExpiresAt <= new Date()) throw new BadRequestException('Unpaid hold has expired');
     // UX: short-circuit with a clear error for callers passing stale state.

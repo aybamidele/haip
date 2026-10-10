@@ -1,7 +1,7 @@
 import { Injectable, Logger } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
 import Stripe from 'stripe';
-import Decimal from 'decimal.js';
+import { stripeMinorUnits } from './stripe-money';
 import type {
   PaymentGateway,
   PaymentGatewayCallOptions,
@@ -42,7 +42,6 @@ export class StripeGateway implements PaymentGateway {
     }
 
     this.stripe = new Stripe(secretKey, {
-      apiVersion: '2025-03-31.basil',
       typescript: true,
     });
   }
@@ -55,34 +54,8 @@ export class StripeGateway implements PaymentGateway {
   }
 
   private toLedgerMinorUnits(amount: number, currencyCode: string): number {
-    const normalized = currencyCode.trim().toUpperCase();
-    const exponent = new Intl.NumberFormat('en', {
-      style: 'currency',
-      currency: normalized,
-    }).resolvedOptions().maximumFractionDigits;
-    if (exponent == null) {
-      throw new StripeLedgerValidationError(
-        `Unable to resolve minor-unit exponent for '${normalized}'`,
-      );
-    }
-    if (exponent > 2) {
-      throw new StripeLedgerValidationError(
-        `${normalized} minor-unit exponent ${exponent} exceeds ledger storage precision`,
-      );
-    }
-    const minorUnits = new Decimal(amount).mul(new Decimal(10).pow(exponent));
-    if (!minorUnits.isInteger()) {
-      throw new StripeLedgerValidationError(
-        `Amount '${amount}' ${normalized} has fractional minor units`,
-      );
-    }
-    const value = minorUnits.toNumber();
-    if (!Number.isSafeInteger(value)) {
-      throw new StripeLedgerValidationError(
-        `Amount '${amount}' ${normalized} exceeds safe integer minor units`,
-      );
-    }
-    return value;
+    try { return stripeMinorUnits(amount, currencyCode); }
+    catch (error) { throw new StripeLedgerValidationError((error as Error).message); }
   }
 
   async authorize(
@@ -94,7 +67,7 @@ export class StripeGateway implements PaymentGateway {
     try {
       const paymentIntent = await this.stripe.paymentIntents.create(
         {
-          amount: Math.round(amount * 100), // Stripe uses cents
+          amount: this.toLedgerMinorUnits(amount, currency),
           currency: currency.toLowerCase(),
           payment_method: token,
           capture_method: 'manual',
@@ -137,7 +110,7 @@ export class StripeGateway implements PaymentGateway {
     try {
       const params: Stripe.PaymentIntentCaptureParams = {};
       if (amount !== undefined) {
-        params.amount_to_capture = Math.round(amount * 100);
+        params.amount_to_capture = this.toLedgerMinorUnits(amount, options?.currencyCode ?? 'USD');
       }
 
       const paymentIntent = await this.stripe.paymentIntents.capture(

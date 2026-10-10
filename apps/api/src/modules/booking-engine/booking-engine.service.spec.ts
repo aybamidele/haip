@@ -319,7 +319,7 @@ describe('BookingEngineService.book', () => {
     expect(result.deposit).toMatchObject({ status: 'pending_redirect' });
     expect(payment.authorizePayment).toHaveBeenCalledWith(expect.anything(), {
       deposit: { reservationId: 'res-1', isRefundable: true, autoConfirm: true },
-    }, undefined);
+    }, undefined, undefined, undefined);
   });
 
   it('classifies the payment as a held deposit', async () => {
@@ -492,7 +492,7 @@ describe('BookingEngineService trusted guest reuse', () => {
     await svc.book(PROP, bookDto, { guestId:'guest-1',propertyId:'bbbbbbbb-0000-4000-a000-000000000001' });
     expect(guest.findById).toHaveBeenCalledWith('guest-1','bbbbbbbb-0000-4000-a000-000000000001');
     expect(guest.create).not.toHaveBeenCalled();
-    expect(reservation.create).toHaveBeenCalledWith(expect.objectContaining({propertyId:PROP,guestId:'guest-1',source:'direct'}), expect.objectContaining({allowOverbooking:false}));
+    expect(reservation.create).toHaveBeenCalledWith(expect.objectContaining({propertyId:PROP,guestId:'guest-1',source:'direct'}), expect.objectContaining({allowOverbooking:false}), undefined);
   });
   it('rejects inaccessible or erased guest records before reservation or payment writes', async () => {
     const { svc, guest, reservation, payment } = makeService();

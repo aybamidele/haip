@@ -1,8 +1,11 @@
-import { Injectable, BadRequestException, ForbiddenException, Inject } from '@nestjs/common';
+import { Injectable, BadRequestException, ForbiddenException, Inject, Optional, ConflictException } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
 import { eq, and } from 'drizzle-orm';
 import Decimal from 'decimal.js';
-import { bookings, reservations, roomTypes } from '@telivityhaip/database';
+import { bookings, reservations, roomTypes, directBookingAttempts, reservationServices, depositLedgerEntries, payments, folios, services } from '@telivityhaip/database';
+import { createHash } from 'node:crypto';
+import { StripeCheckoutService } from '../payment/stripe-checkout.service';
+import { StripeEventService } from '../payment/stripe-event.service';
 import type { DepositPolicy } from '@telivityhaip/database';
 import { DRIZZLE } from '../../database/database.module';
 import { ConnectSearchService } from '../connect/connect-search.service';
@@ -23,6 +26,7 @@ import { DepositService } from '../accounting/deposit.service';
 import { AncillaryService } from '../ancillary/ancillary.service';
 import { PolicyService } from '../policy/policy.service';
 import { BookingEngineConfigService } from './booking-engine-config.service';
+import { reservationServiceAttachedPayload } from '../ancillary/reservation-service-event';
 import { BookingReturnService } from './booking-return.service';
 import type { BeSearchDto } from './dto/be-search.dto';
 import type { BeQuoteDto } from './dto/be-quote.dto';
@@ -54,6 +58,8 @@ export class BookingEngineService {
     private readonly runtimeConfig: ConfigService,
     private readonly ancillaryService: AncillaryService,
     private readonly policyService: PolicyService,
+    @Optional() private readonly stripeCheckout?: StripeCheckoutService,
+    @Optional() private readonly stripeEvents?: StripeEventService,
   ) {}
 
   // --- Search ---
@@ -384,6 +390,47 @@ export class BookingEngineService {
   // --- Book (the heart) ---
 
   async book(propertyId: string, dto: BeCreateBookingDto, existingGuest?: { guestId: string; propertyId: string }) {
+    if (!dto.idempotencyKey) return this.bookOnce(propertyId, dto, existingGuest);
+    if (!/^[A-Za-z0-9_-]{16,128}$/.test(dto.idempotencyKey)) throw new BadRequestException('Invalid booking idempotency key');
+    const hash = (value: string) => createHash('sha256').update(value).digest('hex');
+    const canonical = Object.fromEntries(Object.entries({ ...dto, existingGuest }).sort(([a], [b]) => a.localeCompare(b)));
+    const requestHash = hash(JSON.stringify(canonical));
+    const keyHash = hash(dto.idempotencyKey);
+    const result = await this.db.transaction(async (tx: any) => {
+      await tx.insert(directBookingAttempts).values({ propertyId, keyHash, requestHash }).onConflictDoNothing();
+      const [attempt] = await tx.select().from(directBookingAttempts)
+        .where(and(eq(directBookingAttempts.propertyId, propertyId), eq(directBookingAttempts.keyHash, keyHash))).for('update');
+      if (!attempt || attempt.requestHash !== requestHash) throw new ConflictException('Booking key was already used for a different request');
+      if (attempt.response) return attempt.response;
+      const response = await this.bookOnce(propertyId, dto, existingGuest, tx);
+      await tx.update(directBookingAttempts).set({ reservationId: response.reservationId,
+        paymentId: response.deposit?.paymentId ?? null, response }).where(and(eq(directBookingAttempts.id, attempt.id), eq(directBookingAttempts.propertyId, propertyId)));
+      if (this.stripeEvents) {
+        const [folio] = await tx.select().from(folios).where(and(eq(folios.reservationId, response.reservationId), eq(folios.propertyId, propertyId)));
+        const attached = await tx.select().from(reservationServices).innerJoin(services, and(eq(services.id, reservationServices.serviceId), eq(services.propertyId, propertyId))).where(and(eq(reservationServices.reservationId, response.reservationId), eq(reservationServices.propertyId, propertyId)));
+        const liabilities = await tx.select().from(depositLedgerEntries).where(and(eq(depositLedgerEntries.reservationId, response.reservationId), eq(depositLedgerEntries.propertyId, propertyId)));
+        await this.stripeEvents.enqueue(tx, `haip:direct:${attempt.id}`, [{ event: 'reservation.created', entityType: 'reservation',
+          entityId: response.reservationId, propertyId, data: { reservationId: response.reservationId,
+            arrivalDate: dto.checkIn, departureDate: dto.checkOut, roomTypeId: dto.roomTypeId } },
+          ...(folio ? [{ event: 'folio.created' as const, entityType: 'folio', entityId: folio.id, propertyId, data: { folioNumber: folio.folioNumber, type: folio.type } }] : []),
+          ...attached.map((entry: any) => ({ event: 'reservation.service_attached' as const, entityType: 'reservation_service', entityId: entry.reservation_services.id, propertyId, data: reservationServiceAttachedPayload(entry.reservation_services, entry.services.name) })),
+          ...liabilities.flatMap((entry: any) => [{ event: 'payment.received' as const, entityType: 'payment', entityId: entry.paymentId, propertyId, data: { folioId: folio?.id, amount: entry.amount } },
+            { event: 'deposit.received' as const, entityType: 'deposit', entityId: entry.id, propertyId, data: { amount: entry.amount, status: entry.status, isRefundable: entry.isRefundable } }]),
+          ...(response.status === 'confirmed' ? [{ event: 'reservation.confirmed' as const, entityType: 'reservation',
+            entityId: response.reservationId, propertyId, data: { reservationId: response.reservationId } }] : [])]);
+      }
+      return response;
+    });
+    const deposit = result.deposit;
+    if (deposit?.status === 'pending_redirect' && resolvePaymentGatewayProvider(this.runtimeConfig) === 'stripe') {
+      if (!this.stripeCheckout) throw new BadRequestException('Stripe Checkout is unavailable');
+      const checkout = await this.stripeCheckout.resume(propertyId, deposit.paymentId);
+      return { ...result, deposit: { ...deposit, nextAction: { type: 'redirect', url: checkout.url } } };
+    }
+    return result;
+  }
+
+  private async bookOnce(propertyId: string, dto: BeCreateBookingDto, existingGuest?: { guestId: string; propertyId: string }, tx?: any) {
     const config = await this.bookingEngineConfig.getPublicConfig(propertyId);
     if (!config.isEnabled) {
       throw new ForbiddenException('Direct booking is not enabled for this property');
@@ -407,7 +454,7 @@ export class BookingEngineService {
       adults: dto.adults,
       children: dto.children,
       serviceIds: dto.serviceIds,
-    });
+    }, tx, tx ? { lockForUpdate: true } : undefined);
 
     if (dto.expectedTotal !== undefined && (!/^\d{1,10}\.\d{2}$/.test(dto.expectedTotal) || !new Decimal(dto.expectedTotal).equals(quote.grandTotal))) throw new BadRequestException('Quote changed; request a fresh quote');
     const depositDue = new Decimal(quote.depositDue);
@@ -415,11 +462,16 @@ export class BookingEngineService {
     if (manual && !config.allowManualPayments) throw new ForbiddenException('Manual payments are not enabled');
     const holdMinutes = Number(this.runtimeConfig.get<string>('BOOKING_MANUAL_HOLD_MINUTES', '60') ?? '60');
     if (!Number.isInteger(holdMinutes) || holdMinutes < 1 || holdMinutes > 1440) throw new BadRequestException('Invalid hold configuration');
-    const holdExpiresAt = manual ? new Date(Date.now() + holdMinutes * 60_000) : undefined;
-    if (!manual && depositDue.greaterThan(0) && !dto.paymentToken) {
+    const provider = resolvePaymentGatewayProvider(this.runtimeConfig);
+    const hosted = !manual && provider === 'stripe' && depositDue.greaterThan(0);
+    if (hosted && (!tx || !dto.idempotencyKey || !this.stripeCheckout)) {
+      throw new BadRequestException('Stripe Checkout requires a stable booking idempotency key');
+    }
+    const checkoutPlan = hosted ? await this.stripeCheckout!.prepare(dto.returnUrl) : undefined;
+    const holdExpiresAt = manual ? new Date(Date.now() + holdMinutes * 60_000) : checkoutPlan?.expiresAt;
+    if (!manual && !hosted && depositDue.greaterThan(0) && !dto.paymentToken) {
       throw new BadRequestException('A payment is required to confirm this booking');
     }
-    const provider = resolvePaymentGatewayProvider(this.runtimeConfig);
     // Validate before guest/reservation writes; browser URLs never authorize payment.
     const bookingReturn = provider === 'redsys' && depositDue.greaterThan(0)
       ? new BookingReturnService(this.db, this.runtimeConfig).prepare(propertyId, dto.returnUrl)
@@ -439,7 +491,7 @@ export class BookingEngineService {
           lastName: dto.guestLastName,
           email: dto.guestEmail,
           phone: dto.guestPhone,
-        });
+        }, tx);
     if (existingGuest && (
       guest.email?.toLowerCase() !== dto.guestEmail.toLowerCase()
       || guest.firstName !== dto.guestFirstName
@@ -475,7 +527,7 @@ export class BookingEngineService {
         nights: quote.lineItems.map((night) => ({ date: night.date, roomAmount: night.rate, taxAmount: night.tax })),
         services: quote.services.map((service) => ({ ...service, lineItems: service.lineItems.map((night) => ({ date: night.date, amount: night.amount, taxAmount: night.tax })) })), servicesTotal: quote.servicesTotal, servicesTaxTotal: quote.servicesTaxTotal,
         customReason: null, adjustment: null,
-      } },
+      } }, tx,
     );
 
     // 4. Folio.
@@ -485,7 +537,7 @@ export class BookingEngineService {
       bookingId: reservation.bookingId,
       guestId: guest.id,
       currencyCode: quote.currencyCode,
-    });
+    }, tx);
 
     // 4b. Attach selected extras (posting deferred to check-in / night audit).
     if (dto.serviceIds?.length) {
@@ -497,11 +549,11 @@ export class BookingEngineService {
           propertyId,
           serviceId,
           sourceChannel: 'booking_engine',
-        });
+        }, tx);
       }
-      await this.ancillaryService.ensurePackageComponents(reservation.id, propertyId);
+      await this.ancillaryService.ensurePackageComponents(reservation.id, propertyId, tx);
     } else {
-      await this.ancillaryService.ensurePackageComponents(reservation.id, propertyId);
+      await this.ancillaryService.ensurePackageComponents(reservation.id, propertyId, tx);
     }
 
     // 5 + 6. Take the deposit (hold) and classify it as a deposit liability.
@@ -512,7 +564,14 @@ export class BookingEngineService {
       nextAction?: unknown;
     } | null = null;
     try {
-    if (!manual && depositDue.greaterThan(0) && dto.paymentToken) {
+    if (hosted) {
+      const [payment] = await tx.insert(payments).values({ propertyId, folioId: folio.id,
+        amount: depositDue.toFixed(2), currencyCode: quote.currencyCode, method: 'credit_card',
+        status: 'pending', gatewayProvider: 'stripe', gatewayAccountId: checkoutPlan!.stripeAccountId, idempotencyKey: `direct_${dto.idempotencyKey}` }).returning();
+      await this.stripeCheckout!.createPending(tx, { propertyId, reservationId: reservation.id, paymentId: payment.id,
+        ...checkoutPlan!, refundable: config.depositPolicy.refundable, autoConfirm: await this.shouldAutoConfirm(propertyId) });
+      depositInfo = { paymentId: payment.id, amount: depositDue.toFixed(2), status: 'pending_redirect' };
+    } else if (!manual && depositDue.greaterThan(0) && dto.paymentToken) {
       const policy = config.depositPolicy as DepositPolicy;
       const payment = await this.paymentService.authorizePayment({
         folioId: folio.id,
@@ -531,7 +590,7 @@ export class BookingEngineService {
           isRefundable: policy.refundable,
           autoConfirm: config.isEnabled && await this.shouldAutoConfirm(propertyId),
         },
-      }, bookingReturn ? { returnReferenceHash: bookingReturn.referenceHash, returnDestination: bookingReturn.destination } : undefined);
+      }, bookingReturn ? { returnReferenceHash: bookingReturn.referenceHash, returnDestination: bookingReturn.destination } : undefined, tx, dto.idempotencyKey);
 
       // A redirect is still awaiting authorization; its saved intent is finalized
       // by the verified provider notification. Synchronous gateways keep this path.
@@ -544,7 +603,7 @@ export class BookingEngineService {
           amount: depositDue.toFixed(2),
           currencyCode: quote.currencyCode,
           isRefundable: policy.refundable,
-        } as any);
+        } as any, tx);
       }
 
       depositInfo = {
@@ -556,7 +615,7 @@ export class BookingEngineService {
     }
 
     } catch (error) {
-      await this.reservationService.cancel(reservation.id, propertyId, { cancellationReason: 'Payment authorization failed' });
+      if (!tx) await this.reservationService.cancel(reservation.id, propertyId, { cancellationReason: 'Payment authorization failed' });
       throw error;
     }
     // 7. Auto-confirm only if configured and deposit is already held
@@ -568,7 +627,7 @@ export class BookingEngineService {
       (depositDue.isZero() || depositInfo?.status === 'held') &&
       (await this.shouldAutoConfirm(propertyId))
     ) {
-      const confirmed = await this.reservationService.confirm(reservation.id, propertyId);
+      const confirmed = await this.reservationService.confirm(reservation.id, propertyId, tx);
       status = confirmed.status;
     }
 

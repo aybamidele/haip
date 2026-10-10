@@ -43,7 +43,7 @@ export class BookingReturnService {
     );
   }
 
-  private validateDestination(destination?: string): URL {
+  validateDestination(destination?: string): URL {
     let url: URL;
     try {
       url = new URL(destination ?? '');

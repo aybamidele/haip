@@ -3,6 +3,7 @@ import { ConfigService } from '@nestjs/config';
 import { StripeWebhookController } from './stripe-webhook.controller';
 import { WebhookService } from '../webhook/webhook.service';
 import { FolioService } from '../folio/folio.service';
+import { payments } from '@telivityhaip/database';
 import { DRIZZLE } from '../../database/database.module';
 
 const mockPayment = {
@@ -11,6 +12,8 @@ const mockPayment = {
   folioId: 'folio-001',
   status: 'authorized',
   amount: '500.00',
+  currencyCode: 'EUR',
+  gatewayProvider: 'stripe',
   gatewayTransactionId: 'pi_test_123',
 };
 
@@ -65,11 +68,11 @@ function createRefundWebhookDb(
 function createMockDb(returnData: any[] = [mockPayment]) {
   return {
     select: vi.fn().mockImplementation(() => ({
-      from: vi.fn().mockReturnValue({
+      from: vi.fn().mockImplementation((table: unknown) => ({
         where: vi.fn().mockReturnValue({
-          then: (resolve: any) => resolve(returnData),
+          then: (resolve: any) => resolve(table === payments ? returnData : []),
         }),
-      }),
+      })),
     })),
     insert: vi.fn().mockReturnValue({
       values: vi.fn().mockReturnValue({
@@ -135,7 +138,7 @@ describe('StripeWebhookController', () => {
   describe('internal handlers', () => {
     it('should update payment to captured on payment_intent.succeeded', async () => {
       const handler = (controller as any).handlePaymentIntentSucceeded.bind(controller);
-      await handler({ id: 'pi_test_123' });
+      await handler({ id: 'pi_test_123', amount: 50000, currency: 'eur' });
 
       expect(mockDb.update).toHaveBeenCalled();
       expect(mockWebhookService.emit).toHaveBeenCalledWith(
@@ -160,7 +163,7 @@ describe('StripeWebhookController', () => {
       }).compile();
       const ctrl = module.get<StripeWebhookController>(StripeWebhookController);
 
-      await (ctrl as any).handlePaymentIntentSucceeded({ id: 'pi_test_123' });
+      await (ctrl as any).handlePaymentIntentSucceeded({ id: 'pi_test_123', amount: 50000, currency: 'eur' });
 
       expect(capturedDb.update).not.toHaveBeenCalled();
     });
@@ -168,7 +171,7 @@ describe('StripeWebhookController', () => {
     it('should update payment to failed on payment_intent.payment_failed', async () => {
       const handler = (controller as any).handlePaymentIntentFailed.bind(controller);
       await handler({
-        id: 'pi_test_123',
+        id: 'pi_test_123', amount: 50000, currency: 'eur',
         last_payment_error: { message: 'Card declined' },
       });
 
@@ -184,7 +187,7 @@ describe('StripeWebhookController', () => {
 
     it('should update payment to voided on payment_intent.canceled', async () => {
       const handler = (controller as any).handlePaymentIntentCanceled.bind(controller);
-      await handler({ id: 'pi_test_123' });
+      await handler({ id: 'pi_test_123', amount: 50000, currency: 'eur' });
 
       expect(mockDb.update).toHaveBeenCalled();
       expect(mockWebhookService.emit).toHaveBeenCalledWith(
@@ -213,6 +216,7 @@ describe('StripeWebhookController', () => {
         id: 'ch_test_123',
         payment_intent: 'pi_test_123',
         amount: 50000,
+        currency: 'eur',
         amount_refunded: 50000,
       });
 
@@ -249,6 +253,7 @@ describe('StripeWebhookController', () => {
         id: 'ch_test_123',
         payment_intent: 'pi_test_123',
         amount: 50000,
+        currency: 'eur',
         amount_refunded: 25000,
       });
 
@@ -333,6 +338,7 @@ describe('StripeWebhookController', () => {
       await expect((ctrl as any).handleChargeRefunded({
         id: 'ch_deleted_parent',
         payment_intent: 'pi_test_123',
+        currency: 'eur',
         amount_refunded: 2500,
       })).resolves.toBeUndefined();
 
