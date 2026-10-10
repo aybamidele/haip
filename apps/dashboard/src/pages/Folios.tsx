@@ -741,8 +741,8 @@ function FolioDetail() {
 
       <div className="grid grid-cols-1 lg:grid-cols-3 gap-6">
         {/* Charges */}
-        <div className="lg:col-span-2 bg-white rounded-xl shadow-sm p-5">
-          <div className="flex items-center justify-between mb-4">
+        <div className="lg:col-span-2 min-w-0 bg-white rounded-xl shadow-sm p-5">
+          <div className="flex items-center justify-between flex-wrap gap-2 mb-4">
             <h2 className="text-sm font-semibold text-telivity-navy">{t('folios.charges')}</h2>
             {folio.status === 'open' && (
               <button onClick={() => setChargeOpen(true)} className="flex items-center gap-1 bg-telivity-teal text-white rounded-lg px-3 py-1.5 text-xs font-semibold">
@@ -750,37 +750,39 @@ function FolioDetail() {
               </button>
             )}
           </div>
-          <table className="w-full">
-            <thead>
-              <tr className="border-b border-gray-100">
-                <th className="pb-2 text-left text-xs font-medium text-telivity-mid-grey">{t('common.date')}</th>
-                <th className="pb-2 text-left text-xs font-medium text-telivity-mid-grey">{t('folios.description')}</th>
-                <th className="pb-2 text-left text-xs font-medium text-telivity-mid-grey">{t('folios.type')}</th>
-                <th className="pb-2 text-right text-xs font-medium text-telivity-mid-grey">{t('folios.amount')}</th>
-                <th className="pb-2 text-right text-xs font-medium text-telivity-mid-grey"></th>
-              </tr>
-            </thead>
-            <tbody>
-              {charges.map((c) => (
-                <tr key={c.id} className={`border-b border-gray-50 ${reversedIds.has(c.id) ? 'opacity-50 line-through' : ''}`}>
-                  <td className="py-2 text-sm text-telivity-slate">{c.serviceDate}</td>
-                  <td className="py-2 text-sm text-telivity-navy">{c.description} {c.isLocked && <Lock size={12} className="inline text-telivity-mid-grey" />}</td>
-                  <td className="py-2 text-sm text-telivity-slate">{t(`folios.chargeTypes.${c.type}`, { defaultValue: c.type })}</td>
-                  <td className="py-2 text-sm text-right font-medium">{formatMoney(c.amount, folio.currencyCode)}</td>
-                  <td className="py-2 text-right">
-                    {!c.isReversal && !reversedIds.has(c.id) && !c.isLocked && folio.status === 'open' && (
-                      <button onClick={() => { if (confirm('Reverse this charge?')) reverseMutation.mutate(c.id); }} className="text-telivity-orange text-xs hover:underline">
-                        <RotateCcw size={12} className="inline" /> {t('folios.reverse')}
-                      </button>
-                    )}
-                  </td>
+          <div className="overflow-x-auto" role="region" aria-label={t('folios.charges')} tabIndex={0}>
+            <table className="w-full min-w-[34rem]">
+              <thead>
+                <tr className="border-b border-gray-100">
+                  <th className="pb-2 text-left text-xs font-medium text-telivity-mid-grey">{t('common.date')}</th>
+                  <th className="pb-2 text-left text-xs font-medium text-telivity-mid-grey">{t('folios.description')}</th>
+                  <th className="pb-2 text-left text-xs font-medium text-telivity-mid-grey">{t('folios.type')}</th>
+                  <th className="pb-2 text-right text-xs font-medium text-telivity-mid-grey">{t('folios.amount')}</th>
+                  <th className="pb-2 text-right text-xs font-medium text-telivity-mid-grey"></th>
                 </tr>
-              ))}
-              {charges.length === 0 && (
-                <tr><td colSpan={5} className="py-4 text-center text-sm text-telivity-mid-grey">{t('folios.noCharges')}</td></tr>
-              )}
-            </tbody>
-          </table>
+              </thead>
+              <tbody>
+                {charges.map((c) => (
+                  <tr key={c.id} className={`border-b border-gray-50 ${reversedIds.has(c.id) ? 'opacity-50 line-through' : ''}`}>
+                    <td className="py-2 text-sm text-telivity-slate">{c.serviceDate.slice(0, 10)}</td>
+                    <td className="py-2 text-sm text-telivity-navy">{c.description} {c.isLocked && <Lock size={12} className="inline text-telivity-mid-grey" />}</td>
+                    <td className="py-2 text-sm text-telivity-slate">{t(`folios.chargeTypes.${c.type}`, { defaultValue: c.type })}</td>
+                    <td className="py-2 text-sm text-right font-medium">{formatMoney(c.amount, folio.currencyCode)}</td>
+                    <td className="py-2 text-right">
+                      {!c.isReversal && !reversedIds.has(c.id) && !c.isLocked && folio.status === 'open' && (
+                        <button onClick={() => { if (confirm('Reverse this charge?')) reverseMutation.mutate(c.id); }} className="text-telivity-orange text-xs hover:underline">
+                          <RotateCcw size={12} className="inline" /> {t('folios.reverse')}
+                        </button>
+                      )}
+                    </td>
+                  </tr>
+                ))}
+                {charges.length === 0 && (
+                  <tr><td colSpan={5} className="py-4 text-center text-sm text-telivity-mid-grey">{t('folios.noCharges')}</td></tr>
+                )}
+              </tbody>
+            </table>
+          </div>
         </div>
 
         {/* Payments + Actions */}
