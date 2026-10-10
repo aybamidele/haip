@@ -347,6 +347,9 @@ suite('Stripe operations against real PostgreSQL (synthetic fixtures, simulated 
   it('rejects cross-property invoice access and out-of-band paid invoices without inventing captured funds', async () => {
     const { bill, document, invoiceProvider, remote } = await invoiceFixture(); const draft = await invoices.create({ propertyId, folioId: bill.id, documentId: document.id, dueDays: 7 });
     await expect(invoices.read(draft.id, randomUUID())).rejects.toThrow('not found');
+    expect((await invoices.list(bill.id, propertyId)).map((row: { id: string }) => row.id)).toEqual([draft.id]);
+    expect(await invoices.list(bill.id, randomUUID())).toEqual([]);
+    expect(await invoices.list(randomUUID(), propertyId)).toEqual([]);
     const current = remote.get(draft.invoiceId!); Object.assign(current, { status: 'paid', amount_paid: 10000, amount_remaining: 0 });
     invoiceProvider.invoicePayments.list.mockResolvedValueOnce({ has_more: false, data: [] });
     await expect(events.process(event(), (tx, emit) => invoices.handleInvoice(current, tx, emit))).rejects.toThrow('explicit reconciliation');

@@ -2,7 +2,7 @@ import { assertStripeAccount } from './stripe-context';
 import { StripeRefundService } from './stripe-refund.service';
 import { BadRequestException, ConflictException, Inject, Injectable, NotFoundException, Optional, ServiceUnavailableException } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
-import { and, eq, inArray } from 'drizzle-orm';
+import { and, desc, eq, inArray } from 'drizzle-orm';
 import { fiscalDocuments, folios, guests, payments, stripeInvoices } from '@telivityhaip/database';
 import Decimal from 'decimal.js';
 import Stripe from 'stripe';
@@ -28,6 +28,12 @@ export class StripeInvoiceService {
     const [row] = await this.db.select().from(stripeInvoices).where(and(eq(stripeInvoices.id, id), eq(stripeInvoices.propertyId, propertyId)));
     if (!row) throw new NotFoundException('Stripe invoice not found');
     return row;
+  }
+
+  async list(folioId: string, propertyId: string) {
+    return this.db.select().from(stripeInvoices)
+      .where(and(eq(stripeInvoices.folioId, folioId), eq(stripeInvoices.propertyId, propertyId)))
+      .orderBy(desc(stripeInvoices.createdAt));
   }
 
   async create(dto: CreateStripeInvoiceDto) {

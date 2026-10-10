@@ -11,6 +11,13 @@ export class StripeInvoiceController {
   @Post() @RequirePermissions('folios.manage')
   @ApiOperation({ summary: 'Create a draft Stripe invoice from a requested fiscal document and current folio balance' })
   create(@Body() dto: CreateStripeInvoiceDto) { return this.invoices.create(dto); }
+  @Get() @RequirePermissions('folios.read')
+  @ApiOperation({ summary: 'List Stripe invoice references for a property-scoped folio' })
+  @ApiQuery({ name: 'propertyId', required: true })
+  @ApiQuery({ name: 'folioId', required: true })
+  list(@Query('folioId', ParseUUIDPipe) folioId: string, @Query('propertyId', ParseUUIDPipe) propertyId: string) {
+    return this.invoices.list(folioId, propertyId);
+  }
   @Get(':id') @RequirePermissions('folios.read')
   @ApiOperation({ summary: 'Read the property-scoped Stripe invoice reference' })
   @ApiQuery({ name: 'propertyId', required: true })

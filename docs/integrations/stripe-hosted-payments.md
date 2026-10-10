@@ -56,7 +56,9 @@ Only one creating/draft/open/uncollectible invoice is allowed per folio. An unco
 
 Only a verified successful PaymentIntent linked through Invoice Payments credits the folio. Out-of-band payments, customer credits or multiple payment allocations fail closed for explicit staff reconciliation; they do not invent Stripe funds. Checkout post-payment document events do not credit the ledger again.
 
-Do not void only the HAIP fiscal-document record or alter provider invoice items directly: use the Stripe issuer route to coordinate both sides. No new dashboard invoice-management screen is included.
+Do not void only the HAIP fiscal-document record or alter provider invoice items directly: use the Stripe issuer route to coordinate both sides.
+
+The dashboard exposes this workflow in **Folios & Billing → folio → Stripe invoices**. Staff with `folios.manage` can create a draft for a positive open-folio balance, review its billing contact/amount/terms, confirm sending, view the hosted invoice and confirm voiding unpaid collection. `folios.read` permits invoice history and payment status. `GET /stripe-invoices?propertyId={uuid}&folioId={uuid}` lists the persisted references newest first. Creating/open invoice states refresh every five seconds while visible; verified webhook settlement updates the folio and payment views. Incomplete creation retries reuse the persisted fiscal document and payment terms. Sandbox copy explicitly states that hosted links must be shared manually because Stripe suppresses test invoice emails. Refunds retain the paid invoice history and use the existing payment controls.
 
 ## Refunds
 
@@ -72,7 +74,7 @@ Apply migration `0030_stripe_operations.sql` and deploy compatible HAIP before c
 
 Tests with real PostgreSQL use `STRIPE_OPERATIONS_LIVE_PG=1` and a disposable `DATABASE_URL`, synthetic accommodation, and a simulated Stripe API. They demonstrate ledger/inventory concurrency and recovery, not Stripe network behavior, SCA, delivery configuration or legal invoice compliance. CI runs this database gate and the existing workspace tests.
 
-Deployment acceptance must verify Checkout/SCA through the deployed guest journey, delayed/failed methods, abandoned inventory holds, lost responses, signed provider retries, current refund transitions, delivered invoice emails and hosted invoice payment. The local provider pass below covers only its recorded paths. Enable only methods proven for the booking hold policy. Credit-note automation, out-of-band invoice allocation and new staff invoice UI are outside this implementation. Existing staff manual-capture authorization remains a separate legacy workflow and needs its own provider acceptance; it is not the guest pay-now path.
+Deployment acceptance must verify Checkout/SCA through the deployed guest journey, delayed/failed methods, abandoned inventory holds, lost responses, signed provider retries, current refund transitions, delivered invoice emails and hosted invoice payment. The local provider pass below covers only its recorded paths. Enable only methods proven for the booking hold policy. Credit-note automation and out-of-band invoice allocation are outside this implementation. The staff invoice controls require their own deployed browser acceptance. Existing staff manual-capture authorization remains a separate legacy workflow and needs its own provider acceptance; it is not the guest pay-now path.
 
 Monitor pending event dispatch, unresolved payment/refund/invoice attempts and checkout reconciliation flags. Background sweeps process bounded batches; a large persistent failure backlog needs operator intervention. A fully refunded but previously captured pending stay can retain inventory until staff reconciliation because the existing hold-expiry predicate conservatively recognizes its captured parent payment.
 

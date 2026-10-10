@@ -122,6 +122,20 @@ describe('PaymentService', () => {
     service = module.get<PaymentService>(PaymentService);
   });
 
+  it.each([
+    ['mock', 'sk_test_synthetic', false],
+    ['test', '', false],
+    ['test', 'sk_test_synthetic', true],
+    ['live', 'sk_live_synthetic', true],
+  ])('reports safe invoice availability for %s without returning credentials', async (mode, key, configured) => {
+    const values: Record<string, string> = { STRIPE_MODE: mode as string, STRIPE_SECRET_KEY: key as string };
+    mockConfigService.get.mockImplementation((name: string, fallback?: string) => values[name] ?? fallback);
+    const result = await service.getClientConfig('prop-001');
+    expect(result.stripeInvoicingConfigured).toBe(configured);
+    expect(result.stripeInvoiceMode).toBe(mode);
+    expect(result).not.toHaveProperty('STRIPE_SECRET_KEY');
+  });
+
   describe('recordPayment', () => {
     it.each([['JPY', '100.10'], ['EUR', '1.001'], ['KWD', '1.00']])('rejects unsupported %s precision before payment writes', async (currencyCode, amount) => {
       mockRedsysCredentials.resolveForProperty.mockResolvedValueOnce({ merchantCode: '999008881', terminal: '001', secretKey: 'test-key', environment: 'test' } as any);

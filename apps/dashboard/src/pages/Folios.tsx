@@ -16,11 +16,14 @@ import StatusBadge from '../components/ui/StatusBadge';
 import Modal from '../components/ui/Modal';
 import { StripeProvider } from '../components/payment/StripeProvider';
 import { CardInput } from '../components/payment/CardInput';
+import FolioInvoices from '../components/folios/FolioInvoices';
 
 interface PaymentClientConfig {
   provider?: string;
   clientMode?: 'mock' | 'stripe' | 'redsys' | 'unsupported';
   redsysConfigured?: boolean;
+  stripeInvoicingConfigured?: boolean;
+  stripeInvoiceMode?: string;
 }
 
 interface Folio {
@@ -483,21 +486,21 @@ function FolioDetail() {
   const [correctOp, setCorrectOp] = useState('');
 
   const { data: folioData } = useQuery({
-    queryKey: ['folios', id],
-    queryFn: () => api.get(`/v1/folios/${id}`).then((r) => r.data),
-    enabled: !!id,
+    queryKey: ['folios', propertyId, id],
+    queryFn: () => api.get(`/v1/folios/${id}`, { params: { propertyId } }).then((r) => r.data),
+    enabled: !!id && !!propertyId,
   });
 
   const { data: chargesData } = useQuery({
-    queryKey: ['folios', id, 'charges'],
-    queryFn: () => api.get(`/v1/folios/${id}/charges`).then((r) => r.data),
-    enabled: !!id,
+    queryKey: ['folios', propertyId, id, 'charges'],
+    queryFn: () => api.get(`/v1/folios/${id}/charges`, { params: { propertyId } }).then((r) => r.data),
+    enabled: !!id && !!propertyId,
   });
 
   const { data: paymentsData } = useQuery({
-    queryKey: ['payments', 'folio', id],
-    queryFn: () => api.get('/v1/payments', { params: { folioId: id } }).then((r) => r.data),
-    enabled: !!id,
+    queryKey: ['payments', 'folio', propertyId, id],
+    queryFn: () => api.get('/v1/payments', { params: { propertyId, folioId: id } }).then((r) => r.data),
+    enabled: !!id && !!propertyId,
   });
 
   const { data: arLedgersData } = useQuery({
@@ -710,6 +713,7 @@ function FolioDetail() {
     },
   });
 
+  if (!propertyId) return <div className="flex items-center justify-center h-64 text-telivity-mid-grey">{t('common.selectProperty')}</div>;
   if (!folio) return <div className="flex items-center justify-center h-64 text-telivity-mid-grey">{t('common.loading')}</div>;
 
   return (
@@ -724,6 +728,16 @@ function FolioDetail() {
           <p className="text-2xl font-semibold text-telivity-navy">{formatMoney(folio.balance ?? 0, folio.currencyCode)}</p>
         </div>
       </div>
+
+      {propertyId ? (
+        <FolioInvoices
+          key={`${propertyId}:${folio.id}`}
+          folio={folio}
+          propertyId={propertyId}
+          configured={clientConfigData?.stripeInvoicingConfigured === true}
+          mode={clientConfigData?.stripeInvoiceMode}
+        />
+      ) : null}
 
       <div className="grid grid-cols-1 lg:grid-cols-3 gap-6">
         {/* Charges */}

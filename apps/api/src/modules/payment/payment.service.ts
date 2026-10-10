@@ -951,6 +951,11 @@ export class PaymentService {
       provider,
       clientMode,
       redsysConfigured,
+      stripeInvoicingConfigured: Boolean(
+        this.configService.get<string>('STRIPE_SECRET_KEY')?.trim()
+          && ['test', 'live'].includes(this.configService.get<string>('STRIPE_MODE', 'mock')),
+      ),
+      stripeInvoiceMode: this.configService.get<string>('STRIPE_MODE', 'mock'),
     };
   }
 
