@@ -47,13 +47,13 @@
   },
   "peerDependencies": {
     "@nestjs/common": "^10.4.0",
-    "stripe": "^22.0.0"
+    "stripe": "^23.0.0"
   },
   "devDependencies": {
     "@nestjs/common": "^10.4.0",
     "@types/node": "^22.0.0",
     "eslint": "^9.0.0",
-    "stripe": "^22.0.0",
+    "stripe": "23.0.0",
     "tsup": "^8.3.0",
     "typescript": "^5.7.0",
     "vitest": "^2.1.0"

@@ -1,3 +1,4 @@
+import { PaymentModule } from '../payment/payment.module';
 import { Module } from '@nestjs/common';
 import { WebhookModule } from '../webhook/webhook.module';
 import { FolioModule } from '../folio/folio.module';
@@ -8,7 +9,7 @@ import { ArService } from './ar.service';
 import { AccountingCodeService } from './accounting-code.service';
 
 @Module({
-  imports: [WebhookModule, FolioModule],
+  imports: [WebhookModule, FolioModule, PaymentModule],
   controllers: [AccountingController],
   providers: [DepositService, DepositSettlementService, ArService, AccountingCodeService],
   exports: [DepositService, DepositSettlementService, ArService, AccountingCodeService],

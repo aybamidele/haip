@@ -16,6 +16,7 @@ import {
   reservationServices,
   auditRuns,
   properties,
+  stripeInvoices,
 } from '@telivityhaip/database';
 import type { AcceptedPricingSnapshot } from '@telivityhaip/database';
 import { DRIZZLE } from '../../database/database.module';
@@ -245,6 +246,8 @@ export class FolioService {
         secondFolio = row;
       }
 
+      await this.assertNoCollectibleInvoice(tx, folioId, propertyId);
+      await this.assertNoCollectibleInvoice(tx, dto.targetFolioId, propertyId);
       const sourceFolio = firstFolio.id === folioId ? firstFolio : secondFolio;
       const targetFolio = firstFolio.id === dto.targetFolioId ? firstFolio : secondFolio;
 
@@ -374,6 +377,7 @@ export class FolioService {
       throw new ConflictException('Amended pricing currency does not match the linked folio');
     }
 
+    await this.assertNoCollectibleInvoice(tx, folioId, propertyId);
     const serviceRows = await tx
       .select()
       .from(reservationServices)
@@ -709,6 +713,18 @@ export class FolioService {
     return { reversedChargeIds, adjustmentAmount: adjustment.toFixed(2) };
   }
 
+  /** SQL also enforces this invariant atomically against invoice creation races. */
+  private async assertNoCollectibleInvoice(db: any, folioId: string, propertyId: string) {
+    const rows = await db.select().from(stripeInvoices).where(and(
+      eq(stripeInvoices.folioId, folioId), eq(stripeInvoices.propertyId, propertyId),
+      inArray(stripeInvoices.status, ['creating', 'draft', 'open', 'uncollectible']),
+    ));
+    if (rows.some((row: any) => row.folioId === folioId && row.propertyId === propertyId
+      && ['creating', 'draft', 'open', 'uncollectible'].includes(row.status))) {
+      throw new ConflictException('Void the collectible Stripe invoice before changing folio charges');
+    }
+  }
+
   async postCharge(
     folioId: string,
     dto: CreateChargeDto,
@@ -727,6 +743,8 @@ export class FolioService {
     if (folio.status !== 'open') {
       throw new BadRequestException('Cannot post charge to a folio that is not open');
     }
+
+    await this.assertNoCollectibleInvoice(db, folioId, dto.propertyId);
 
     // A negative/zero amount inverts or zeroes the folio balance. Generic
     // posting permits this only for an explicit adjustment; canonical reversal
@@ -983,6 +1001,7 @@ export class FolioService {
       if (!original) {
         throw new NotFoundException(`Charge ${chargeId} not found`);
       }
+      await this.assertNoCollectibleInvoice(db, folioId, propertyId);
       if (original.isLocked) {
         throw new BadRequestException('Cannot reverse a locked charge');
       }

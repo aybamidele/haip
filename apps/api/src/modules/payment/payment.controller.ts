@@ -13,6 +13,7 @@ import { PaymentService } from './payment.service';
 import { CreatePaymentDto } from './dto/create-payment.dto';
 import { AuthorizePaymentDto } from './dto/authorize-payment.dto';
 import { ListPaymentsDto } from './dto/list-payments.dto';
+import { RefundPaymentDto } from './dto/refund-payment.dto';
 import { CorrectPaymentDto } from './dto/correct-payment.dto';
 
 @ApiTags('payments')
@@ -95,9 +96,9 @@ export class PaymentController {
   refundPayment(
     @Param('id', ParseUUIDPipe) id: string,
     @Query('propertyId', ParseUUIDPipe) propertyId: string,
-    @Body() body: { amount?: string },
+    @Body() body: RefundPaymentDto,
   ) {
-    return this.paymentService.refundPayment(id, propertyId, body.amount);
+    return this.paymentService.refundPayment(id, propertyId, body.amount, { idempotencyKey: body.idempotencyKey });
   }
 
   @Post(':id/correct')

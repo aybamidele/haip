@@ -10,6 +10,7 @@ import {
   IsUUID,
   Min,
   MaxLength,
+  Matches,
 } from 'class-validator';
 import { ApiProperty, ApiPropertyOptional } from '@nestjs/swagger';
 
@@ -18,6 +19,12 @@ import { ApiProperty, ApiPropertyOptional } from '@nestjs/swagger';
  * accepted from the client. `propertyId` is pinned from the booking-key principal.
  */
 export class BeCreateBookingDto {
+  @ApiPropertyOptional({ description: 'Stable random identity for safe direct-booking retries; required for Stripe Checkout' })
+  @IsOptional()
+  @IsString()
+  @Matches(/^[A-Za-z0-9_-]{16,128}$/)
+  idempotencyKey?: string;
+
   @ApiPropertyOptional()
   @IsOptional()
   @IsString()

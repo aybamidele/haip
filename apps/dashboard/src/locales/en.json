@@ -2330,5 +2330,40 @@
     "unitNumber": "Unit {{number}}",
     "unitImportHelp": "Choose the same unit for Airbnb and Booking.com calendars that describe the same accommodation. They will block that unit once. Existing unmapped feeds keep their current behaviour.",
     "unitExportHelp": "A unit export includes its reservations and imported blocks. Unassigned reservations and unmapped imports are included conservatively until staff assigns or maps them. A room-type export blocks only dates when the whole type is booked. Export mapping is fixed after creation."
+  },
+  "folioInvoices": {
+    "title": "Stripe invoices",
+    "refresh": "Refresh status",
+    "hint": "Create a draft from the outstanding folio balance, review the billing contact, then send the invoice.",
+    "sandbox": "Sandbox: no real money is collected. Stripe does not deliver invoice emails in test mode; share the hosted link manually.",
+    "notConfigured": "Stripe invoicing is not configured. Existing invoice history remains available.",
+    "loadFailed": "Invoices could not be loaded. Refresh status to try again.",
+    "operationFailed": "The invoice operation could not complete. Refresh status before retrying. Check that the guest has a billing email and resolve any pending payment or existing invoice first.",
+    "empty": "No Stripe invoices for this folio.",
+    "dueDays": "Payment due in days",
+    "creating": "Creating draft…",
+    "create": "Create invoice",
+    "balance": "Outstanding balance: {{amount}}",
+    "noBalance": "There is no outstanding balance to invoice.",
+    "terms": "Payment terms: {{days}} days from finalization.",
+    "view": "View invoice",
+    "retry": "Retry draft creation",
+    "send": "Send invoice",
+    "void": "Void invoice",
+    "retryHint": "Creation is incomplete. Retry the existing draft to preserve the original amount and payment terms.",
+    "paidHint": "The invoice payment was recorded. Refunds appear in Payments below; the original invoice retains its paid history.",
+    "confirmation": "Confirm invoice action",
+    "sendConfirm": "Finalize the {{amount}} invoice for {{email}}? This makes its payment link collectible.",
+    "voidConfirm": "Void this invoice and disable collection before changing charges or recording another payment?",
+    "confirmSend": "Confirm and send",
+    "confirmVoid": "Confirm void",
+    "status": {
+      "creating": "Creating",
+      "draft": "Draft",
+      "open": "Awaiting payment",
+      "paid": "Paid",
+      "void": "Voided",
+      "uncollectible": "Uncollectible"
+    }
   }
 }

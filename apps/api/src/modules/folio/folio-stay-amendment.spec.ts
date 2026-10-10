@@ -87,7 +87,7 @@ function makeTx(
         reservationId: folioReservationId,
         status: 'open',
         currencyCode: 'EUR',
-      }], serviceRows, ledger, [{ id: PROPERTY, timezone: propertyTimezone }], completedAudits];
+      }], [], serviceRows, ledger, [{ id: PROPERTY, timezone: propertyTimezone }], completedAudits];
     const rows = stages[selectCount++ % stages.length]!;
     const chain: any = {
       from: vi.fn(() => chain),

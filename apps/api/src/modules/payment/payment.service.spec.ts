@@ -1,3 +1,4 @@
+import { folios, stripeInvoices } from '@telivityhaip/database';
 import { Test, TestingModule } from '@nestjs/testing';
 import { BadRequestException, ConflictException } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
@@ -33,15 +34,16 @@ const mockPayment = {
 
 function createMockDb(returnData: any[] = [mockPayment]) {
   const selectChain = () => ({
-    from: vi.fn().mockReturnValue({
-      where: vi.fn().mockReturnValue({
+    from: vi.fn().mockImplementation((table: unknown) => {
+      const rows = table === folios ? [mockFolio] : table === stripeInvoices ? [] : returnData;
+      return { where: vi.fn().mockReturnValue({
+        for: vi.fn().mockResolvedValue(rows),
         limit: vi.fn().mockReturnValue({
-          offset: vi.fn().mockReturnValue({
-            orderBy: vi.fn().mockResolvedValue(returnData),
-          }),
+          then: (resolve: any) => resolve(rows),
+          offset: vi.fn().mockReturnValue({ orderBy: vi.fn().mockResolvedValue(rows) }),
         }),
-        then: (resolve: any) => resolve(returnData),
-      }),
+        then: (resolve: any) => resolve(rows),
+      }) };
     }),
   });
 
@@ -82,7 +84,7 @@ const mockGateway = {
 };
 
 const mockWebhookService = { emit: vi.fn() };
-const mockConfigService = { get: vi.fn() };
+const mockConfigService = { get: vi.fn((_key: string, fallback?: string) => fallback) };
 const mockRedsysCredentials = {
   resolveForProperty: vi.fn().mockResolvedValue(null),
   merchantNotificationUrl: vi.fn().mockReturnValue('http://localhost:3000/api/v1/webhooks/redsys'),
@@ -102,6 +104,7 @@ describe('PaymentService', () => {
   beforeEach(async () => {
     mockDb = createMockDb();
     vi.clearAllMocks();
+    mockConfigService.get.mockImplementation((_key: string, fallback?: string) => fallback);
     mockFolioService.findById.mockResolvedValue(mockFolio);
 
     const module: TestingModule = await Test.createTestingModule({
@@ -117,6 +120,20 @@ describe('PaymentService', () => {
     }).compile();
 
     service = module.get<PaymentService>(PaymentService);
+  });
+
+  it.each([
+    ['mock', 'sk_test_synthetic', false],
+    ['test', '', false],
+    ['test', 'sk_test_synthetic', true],
+    ['live', 'sk_live_synthetic', true],
+  ])('reports safe invoice availability for %s without returning credentials', async (mode, key, configured) => {
+    const values: Record<string, string> = { STRIPE_MODE: mode as string, STRIPE_SECRET_KEY: key as string };
+    mockConfigService.get.mockImplementation((name: string, fallback?: string) => values[name] ?? fallback);
+    const result = await service.getClientConfig('prop-001');
+    expect(result.stripeInvoicingConfigured).toBe(configured);
+    expect(result.stripeInvoiceMode).toBe(mode);
+    expect(result).not.toHaveProperty('STRIPE_SECRET_KEY');
   });
 
   describe('recordPayment', () => {
@@ -150,7 +167,7 @@ describe('PaymentService', () => {
 
       expect(result).toMatchObject({ id: mockPayment.id, status: mockPayment.status });
       expectSafePublicPayment(result);
-      expect(mockFolioService.recalculateBalance).toHaveBeenCalledWith('folio-001', 'prop-001');
+      expect(mockFolioService.recalculateBalance).toHaveBeenCalledWith('folio-001', 'prop-001', mockDb);
       expect(mockWebhookService.emit).toHaveBeenCalledWith(
         'payment.received',
         'payment',
@@ -170,7 +187,7 @@ describe('PaymentService', () => {
       });
 
       expect(result).toMatchObject({ id: mockPayment.id, status: mockPayment.status });
-      expect(mockFolioService.recalculateBalance).toHaveBeenCalledWith('folio-001', 'prop-001');
+      expect(mockFolioService.recalculateBalance).toHaveBeenCalledWith('folio-001', 'prop-001', mockDb);
     });
 
     it('should record pix as a manual settle tender', async () => {

@@ -370,7 +370,10 @@ async function expectStripeWebhookAccepted(
   driver: StripeWebhookDriver,
   event: Record<string, unknown>,
 ) {
-  driver.stripe = { webhooks: { constructEvent: () => event } };
+  // This legacy fixture drives aggregate Charge handling; verified Refund API reads
+  // are exercised separately by stripe-operations.postgres.spec.ts.
+  Reflect.set(controller, 'refundService', undefined);
+  driver.stripe = { webhooks: { constructEvent: () => ({ ...event, livemode: true }) } };
   driver.webhookSecret = 'whsec_flag_off';
   vi.stubEnv('STRIPE_MODE', 'live');
   const response = {

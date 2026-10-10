@@ -183,6 +183,7 @@ export const payments = pgTable('payments', {
 
   // Payment gateway (PCI — KB 5.10, 6.2)
   // NEVER store raw card data. Stripe/Adyen tokenization only.
+  gatewayAccountId: varchar('gateway_account_id', { length: 255 }),
   gatewayProvider: varchar('gateway_provider', { length: 20 }), // "stripe", "adyen"
   gatewayTransactionId: varchar('gateway_transaction_id', { length: 255 }),
   // Hash of the limited guest payment-status capability; never the raw reference.

@@ -16,11 +16,14 @@ import StatusBadge from '../components/ui/StatusBadge';
 import Modal from '../components/ui/Modal';
 import { StripeProvider } from '../components/payment/StripeProvider';
 import { CardInput } from '../components/payment/CardInput';
+import FolioInvoices from '../components/folios/FolioInvoices';
 
 interface PaymentClientConfig {
   provider?: string;
   clientMode?: 'mock' | 'stripe' | 'redsys' | 'unsupported';
   redsysConfigured?: boolean;
+  stripeInvoicingConfigured?: boolean;
+  stripeInvoiceMode?: string;
 }
 
 interface Folio {
@@ -478,25 +481,26 @@ function FolioDetail() {
   const [authAmount, setAuthAmount] = useState('');
   const [refundTarget, setRefundTarget] = useState<Payment | null>(null);
   const [refundAmount, setRefundAmount] = useState('');
+  const [refundKey, setRefundKey] = useState('');
   const [correctTarget, setCorrectTarget] = useState<Payment | null>(null);
   const [correctOp, setCorrectOp] = useState('');
 
   const { data: folioData } = useQuery({
-    queryKey: ['folios', id],
-    queryFn: () => api.get(`/v1/folios/${id}`).then((r) => r.data),
-    enabled: !!id,
+    queryKey: ['folios', propertyId, id],
+    queryFn: () => api.get(`/v1/folios/${id}`, { params: { propertyId } }).then((r) => r.data),
+    enabled: !!id && !!propertyId,
   });
 
   const { data: chargesData } = useQuery({
-    queryKey: ['folios', id, 'charges'],
-    queryFn: () => api.get(`/v1/folios/${id}/charges`).then((r) => r.data),
-    enabled: !!id,
+    queryKey: ['folios', propertyId, id, 'charges'],
+    queryFn: () => api.get(`/v1/folios/${id}/charges`, { params: { propertyId } }).then((r) => r.data),
+    enabled: !!id && !!propertyId,
   });
 
   const { data: paymentsData } = useQuery({
-    queryKey: ['payments', 'folio', id],
-    queryFn: () => api.get('/v1/payments', { params: { folioId: id } }).then((r) => r.data),
-    enabled: !!id,
+    queryKey: ['payments', 'folio', propertyId, id],
+    queryFn: () => api.get('/v1/payments', { params: { propertyId, folioId: id } }).then((r) => r.data),
+    enabled: !!id && !!propertyId,
   });
 
   const { data: arLedgersData } = useQuery({
@@ -656,8 +660,8 @@ function FolioDetail() {
   });
 
   const refundMutation = useMutation({
-    mutationFn: ({ paymentId, amount }: { paymentId: string; amount?: string }) =>
-      api.post(`/v1/payments/${paymentId}/refund`, amount ? { amount: moneyString(amount) } : {}),
+    mutationFn: ({ paymentId, amount, idempotencyKey }: { paymentId: string; amount?: string; idempotencyKey: string }) =>
+      api.post(`/v1/payments/${paymentId}/refund`, { ...(amount ? { amount: moneyString(amount) } : {}), idempotencyKey }),
     onSuccess: () => {
       invalidate();
       setRefundTarget(null);
@@ -709,6 +713,7 @@ function FolioDetail() {
     },
   });
 
+  if (!propertyId) return <div className="flex items-center justify-center h-64 text-telivity-mid-grey">{t('common.selectProperty')}</div>;
   if (!folio) return <div className="flex items-center justify-center h-64 text-telivity-mid-grey">{t('common.loading')}</div>;
 
   return (
@@ -724,10 +729,20 @@ function FolioDetail() {
         </div>
       </div>
 
+      {propertyId ? (
+        <FolioInvoices
+          key={`${propertyId}:${folio.id}`}
+          folio={folio}
+          propertyId={propertyId}
+          configured={clientConfigData?.stripeInvoicingConfigured === true}
+          mode={clientConfigData?.stripeInvoiceMode}
+        />
+      ) : null}
+
       <div className="grid grid-cols-1 lg:grid-cols-3 gap-6">
         {/* Charges */}
-        <div className="lg:col-span-2 bg-white rounded-xl shadow-sm p-5">
-          <div className="flex items-center justify-between mb-4">
+        <div className="lg:col-span-2 min-w-0 bg-white rounded-xl shadow-sm p-5">
+          <div className="flex items-center justify-between flex-wrap gap-2 mb-4">
             <h2 className="text-sm font-semibold text-telivity-navy">{t('folios.charges')}</h2>
             {folio.status === 'open' && (
               <button onClick={() => setChargeOpen(true)} className="flex items-center gap-1 bg-telivity-teal text-white rounded-lg px-3 py-1.5 text-xs font-semibold">
@@ -735,37 +750,39 @@ function FolioDetail() {
               </button>
             )}
           </div>
-          <table className="w-full">
-            <thead>
-              <tr className="border-b border-gray-100">
-                <th className="pb-2 text-left text-xs font-medium text-telivity-mid-grey">{t('common.date')}</th>
-                <th className="pb-2 text-left text-xs font-medium text-telivity-mid-grey">{t('folios.description')}</th>
-                <th className="pb-2 text-left text-xs font-medium text-telivity-mid-grey">{t('folios.type')}</th>
-                <th className="pb-2 text-right text-xs font-medium text-telivity-mid-grey">{t('folios.amount')}</th>
-                <th className="pb-2 text-right text-xs font-medium text-telivity-mid-grey"></th>
-              </tr>
-            </thead>
-            <tbody>
-              {charges.map((c) => (
-                <tr key={c.id} className={`border-b border-gray-50 ${reversedIds.has(c.id) ? 'opacity-50 line-through' : ''}`}>
-                  <td className="py-2 text-sm text-telivity-slate">{c.serviceDate}</td>
-                  <td className="py-2 text-sm text-telivity-navy">{c.description} {c.isLocked && <Lock size={12} className="inline text-telivity-mid-grey" />}</td>
-                  <td className="py-2 text-sm text-telivity-slate">{t(`folios.chargeTypes.${c.type}`, { defaultValue: c.type })}</td>
-                  <td className="py-2 text-sm text-right font-medium">{formatMoney(c.amount, folio.currencyCode)}</td>
-                  <td className="py-2 text-right">
-                    {!c.isReversal && !reversedIds.has(c.id) && !c.isLocked && folio.status === 'open' && (
-                      <button onClick={() => { if (confirm('Reverse this charge?')) reverseMutation.mutate(c.id); }} className="text-telivity-orange text-xs hover:underline">
-                        <RotateCcw size={12} className="inline" /> {t('folios.reverse')}
-                      </button>
-                    )}
-                  </td>
+          <div className="overflow-x-auto" role="region" aria-label={t('folios.charges')} tabIndex={0}>
+            <table className="w-full min-w-[34rem]">
+              <thead>
+                <tr className="border-b border-gray-100">
+                  <th className="pb-2 text-left text-xs font-medium text-telivity-mid-grey">{t('common.date')}</th>
+                  <th className="pb-2 text-left text-xs font-medium text-telivity-mid-grey">{t('folios.description')}</th>
+                  <th className="pb-2 text-left text-xs font-medium text-telivity-mid-grey">{t('folios.type')}</th>
+                  <th className="pb-2 text-right text-xs font-medium text-telivity-mid-grey">{t('folios.amount')}</th>
+                  <th className="pb-2 text-right text-xs font-medium text-telivity-mid-grey"></th>
                 </tr>
-              ))}
-              {charges.length === 0 && (
-                <tr><td colSpan={5} className="py-4 text-center text-sm text-telivity-mid-grey">{t('folios.noCharges')}</td></tr>
-              )}
-            </tbody>
-          </table>
+              </thead>
+              <tbody>
+                {charges.map((c) => (
+                  <tr key={c.id} className={`border-b border-gray-50 ${reversedIds.has(c.id) ? 'opacity-50 line-through' : ''}`}>
+                    <td className="py-2 text-sm text-telivity-slate">{c.serviceDate.slice(0, 10)}</td>
+                    <td className="py-2 text-sm text-telivity-navy">{c.description} {c.isLocked && <Lock size={12} className="inline text-telivity-mid-grey" />}</td>
+                    <td className="py-2 text-sm text-telivity-slate">{t(`folios.chargeTypes.${c.type}`, { defaultValue: c.type })}</td>
+                    <td className="py-2 text-sm text-right font-medium">{formatMoney(c.amount, folio.currencyCode)}</td>
+                    <td className="py-2 text-right">
+                      {!c.isReversal && !reversedIds.has(c.id) && !c.isLocked && folio.status === 'open' && (
+                        <button onClick={() => { if (confirm('Reverse this charge?')) reverseMutation.mutate(c.id); }} className="text-telivity-orange text-xs hover:underline">
+                          <RotateCcw size={12} className="inline" /> {t('folios.reverse')}
+                        </button>
+                      )}
+                    </td>
+                  </tr>
+                ))}
+                {charges.length === 0 && (
+                  <tr><td colSpan={5} className="py-4 text-center text-sm text-telivity-mid-grey">{t('folios.noCharges')}</td></tr>
+                )}
+              </tbody>
+            </table>
+          </div>
         </div>
 
         {/* Payments + Actions */}
@@ -822,7 +839,7 @@ function FolioDetail() {
                       )}
                       {canRefund && (
                         <button
-                          onClick={() => { setRefundTarget(p); setRefundAmount(''); }}
+                          onClick={() => { setRefundTarget(p); setRefundAmount(''); setRefundKey(crypto.randomUUID()); }}
                           className="text-telivity-orange text-xs hover:underline"
                         >
                           {t('folios.refund')}
@@ -1002,6 +1019,7 @@ function FolioDetail() {
               refundMutation.mutate({
                 paymentId: refundTarget!.id,
                 amount: refundAmount.trim() || undefined,
+                idempotencyKey: refundKey,
               })
             }
             disabled={refundMutation.isPending}
