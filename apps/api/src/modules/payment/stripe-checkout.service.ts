@@ -60,7 +60,7 @@ export class StripeCheckoutService {
       const suffix = createHash('sha256').update(row.id).digest('hex').slice(0, 8)
         .replace(/[0-9a-f]/g, character => 'abcdefghijklmnop'[parseInt(character, 16)]!);
       const session = await this.client().checkout.sessions.create({
-        mode: 'payment', ui_mode: 'hosted', client_reference_id: paymentId,
+        mode: 'payment', ui_mode: 'hosted_page', client_reference_id: paymentId,
         success_url: row.returnUrl, cancel_url: row.returnUrl,
         // Inventory expiry is enforced by HAIP maintenance using sessions.expire.
         // Keep creation parameters immutable across an ambiguous provider retry.

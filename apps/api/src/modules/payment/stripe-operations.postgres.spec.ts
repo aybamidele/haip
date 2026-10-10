@@ -61,6 +61,7 @@ suite('Stripe operations against real PostgreSQL (synthetic fixtures, simulated 
     accounts: { retrieve: vi.fn(async () => ({ id: 'acct_synthetic' })) },
     checkout: { sessions: {
       create: vi.fn(async (params: any, options: any) => {
+        if (params.ui_mode !== 'hosted_page') throw new Error('Stripe 2026-09-30.endive requires hosted_page');
         if (!creations.has(options.idempotencyKey)) {
           const value = { id: `cs_test_${randomUUID()}`, url: 'https://checkout.stripe.com/c/pay/synthetic',
             ...params, currency: 'gbp', amount_total: params.line_items[0].price_data.unit_amount,
