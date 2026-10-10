@@ -164,7 +164,7 @@ export default function FolioInvoices({ folio, propertyId, configured, mode }: {
               {invoice.status === 'paid' ? <p className="text-sm text-telivity-slate mt-2">{t('folioInvoices.paidHint')}</p> : null}
               {selected ? (
                 <div role="group" aria-label={t('folioInvoices.confirmation')} className="mt-4 space-y-3">
-                  <p className="text-sm text-telivity-navy">{confirmation.action === 'send' ? t('folioInvoices.sendConfirm', { amount: formatMoney(Number(invoice.amount), invoice.currencyCode), email: invoice.billingEmail }) : t('folioInvoices.voidConfirm')}</p>
+                  <p className="text-sm text-telivity-navy break-words">{confirmation.action === 'send' ? t('folioInvoices.sendConfirm', { amount: formatMoney(Number(invoice.amount), invoice.currencyCode), email: invoice.billingEmail }) : t('folioInvoices.voidConfirm')}</p>
                   <div className="flex flex-wrap gap-2">
                     <button type="button" className={primaryClass} disabled={busy} onClick={() => { setError(''); action.mutate(confirmation); }}>{busy ? t('common.loading') : confirmation.action === 'send' ? t('folioInvoices.confirmSend') : t('folioInvoices.confirmVoid')}</button>
                     <button type="button" className={buttonClass} disabled={busy} onClick={() => setConfirmation(null)}>{t('common.cancel')}</button>
